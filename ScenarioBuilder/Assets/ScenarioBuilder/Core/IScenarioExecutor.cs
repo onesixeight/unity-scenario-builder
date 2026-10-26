@@ -3,6 +3,24 @@ using System.Collections.Generic;
 
 namespace ScenarioBuilder.Core
 {
+    public interface IGroupProgress
+    {
+        string Id { get; }
+        string Title { get; }
+        GroupStatus Status { get; }
+        int Violations { get; }
+        int ViolationThreshold { get; }
+        bool StopsAtThreshold { get; }
+        GroupStartRule StartRule { get; }
+        string StartAfterStepId { get; }
+        IReadOnlyList<string> StepIds { get; }
+    }
+
+    public interface IGroupProgressProvider
+    {
+        IReadOnlyList<IGroupProgress> Groups { get; }
+    }
+
     public interface IStepProgress
     {
         StepSpec Spec { get; }

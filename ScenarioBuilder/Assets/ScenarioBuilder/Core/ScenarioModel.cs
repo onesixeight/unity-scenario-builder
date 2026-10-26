@@ -6,6 +6,8 @@ namespace ScenarioBuilder.Core
     public enum StepStatus { Pending, Active, Completed, Failed, Skipped }
     public enum OutOfOrderPolicy { Violation, Ignore }
     public enum RunMode { Training, Exam }
+    public enum GroupStartRule { AfterPreviousGroup = 0, AtStart = 1, AfterStep = 2 }
+    public enum GroupStatus { Pending, Active, Completed, Skipped }
     public enum ConditionOutcome { Ignore, Progress, Success, Violation }
 
     public sealed class ScenarioAction
@@ -94,6 +96,8 @@ namespace ScenarioBuilder.Core
         public string Id;
         public string Title;
         public int ViolationThreshold = 2;
+        public GroupStartRule StartRule = GroupStartRule.AfterPreviousGroup;
+        public string StartAfterStepId;
         public List<string> StepIds = new List<string>();
         public List<ActivationBatch> Batches = new List<ActivationBatch>();
     }
@@ -202,7 +206,67 @@ namespace ScenarioBuilder.Core
             }
             foreach (var id in stepIds)
                 if (!assignedSteps.Contains(id)) errors.Add("Step '" + id + "' has no group.");
+            ValidateGroupDependencies(errors);
             return errors;
+        }
+
+        private void ValidateGroupDependencies(List<string> errors)
+        {
+            if (Groups == null) return;
+            var knownSteps = new HashSet<string>(StringComparer.Ordinal);
+            if (Steps != null)
+                foreach (var step in Steps)
+                    if (step != null && !string.IsNullOrWhiteSpace(step.Id)) knownSteps.Add(step.Id);
+            var owners = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var index = 0; index < Groups.Count; index++)
+            {
+                var group = Groups[index];
+                if (group?.StepIds == null) continue;
+                foreach (var id in group.StepIds)
+                    if (id != null && knownSteps.Contains(id) && !owners.ContainsKey(id)) owners.Add(id, index);
+            }
+
+            var dependencies = new int[Groups.Count];
+            for (var index = 0; index < Groups.Count; index++)
+            {
+                dependencies[index] = -1;
+                var group = Groups[index];
+                if (group == null) continue;
+                if (!Enum.IsDefined(typeof(GroupStartRule), group.StartRule))
+                {
+                    errors.Add("Unknown activation rule for group '" + group.Id + "'.");
+                    continue;
+                }
+                if (group.StartRule == GroupStartRule.AfterPreviousGroup && index > 0)
+                    dependencies[index] = index - 1;
+                else if (group.StartRule == GroupStartRule.AfterStep)
+                {
+                    int owner;
+                    if (string.IsNullOrWhiteSpace(group.StartAfterStepId) || !owners.TryGetValue(group.StartAfterStepId, out owner))
+                        errors.Add("Group '" + group.Id + "' has an unknown or disabled start trigger: '" + group.StartAfterStepId + "'.");
+                    else if (owner == index)
+                        errors.Add("Group '" + group.Id + "' cannot use its own step as a start trigger (self dependency).");
+                    else dependencies[index] = owner;
+                }
+            }
+
+            // Every rule has at most one dependency; acyclic chains must end at an initial group.
+            var visited = new bool[Groups.Count];
+            for (var index = 0; index < Groups.Count; index++)
+            {
+                var path = new HashSet<int>();
+                var cursor = index;
+                while (cursor >= 0 && !visited[cursor])
+                {
+                    if (!path.Add(cursor))
+                    {
+                        errors.Add("Activation dependency cycle involving group '" + Groups[cursor].Id + "'.");
+                        break;
+                    }
+                    cursor = dependencies[cursor];
+                }
+                foreach (var item in path) visited[item] = true;
+            }
         }
     }
 

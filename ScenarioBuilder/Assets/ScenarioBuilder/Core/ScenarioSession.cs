@@ -4,29 +4,28 @@ using System.Globalization;
 
 namespace ScenarioBuilder.Core
 {
-    public sealed class ScenarioSession : IScenarioExecutor
+    public sealed class ScenarioSession : IScenarioExecutor, IGroupProgressProvider
     {
         private readonly ScenarioPlan plan;
         private readonly RunMode mode;
         private readonly bool retryOnViolation;
-        private readonly bool stopGroupAtThreshold;
         private readonly IJournalLogger logger;
         private readonly Func<DateTime> utcNow;
         private readonly List<StepRuntime> steps = new List<StepRuntime>();
+        private readonly List<GroupRuntime> groups = new List<GroupRuntime>();
         private readonly Dictionary<string, StepRuntime> stepsById = new Dictionary<string, StepRuntime>(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> stepGroups = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, GroupRuntime> owners = new Dictionary<string, GroupRuntime>(StringComparer.Ordinal);
         private readonly HashSet<string> handledEvents = new HashSet<string>(StringComparer.Ordinal);
-        private int groupIndex = -1;
-        private int batchIndex;
         private int sequence;
         private bool started;
 
         public IReadOnlyList<StepRuntime> Steps { get; }
         IReadOnlyList<IStepProgress> IScenarioExecutor.Steps => Steps;
+        public IReadOnlyList<IGroupProgress> Groups { get; }
         public Journal Journal => logger.Journal;
         public bool IsFinished { get; private set; }
-        public string CurrentGroupId => groupIndex >= 0 && groupIndex < plan.Groups.Count ? plan.Groups[groupIndex].Id : null;
-        public int CurrentGroupViolations { get; private set; }
+        public string CurrentGroupId => FirstActiveGroup()?.Id;
+        public int CurrentGroupViolations => FirstActiveGroup()?.Violations ?? 0;
         public string LastMessage { get; private set; } = string.Empty;
         public event Action Changed;
 
@@ -44,7 +43,6 @@ namespace ScenarioBuilder.Core
             this.plan = SnapshotPlan(plan);
             mode = policy.Mode;
             retryOnViolation = policy.RetryOnViolation;
-            stopGroupAtThreshold = policy.StopGroupAtThreshold;
             var conditions = new HashSet<IStepCondition>();
             foreach (var spec in this.plan.Steps)
             {
@@ -54,9 +52,14 @@ namespace ScenarioBuilder.Core
                 steps.Add(step);
                 stepsById.Add(spec.Id, step);
             }
-            foreach (var group in this.plan.Groups)
-                foreach (var id in group.StepIds) stepGroups.Add(id, group.Id);
+            for (var index = 0; index < this.plan.Groups.Count; index++)
+            {
+                var group = new GroupRuntime(this.plan.Groups[index], index, policy.StopGroupAtThreshold);
+                groups.Add(group);
+                foreach (var id in group.StepIds) owners.Add(id, group);
+            }
             Steps = steps.AsReadOnly();
+            Groups = groups.AsReadOnly();
         }
 
         public void Start()
@@ -69,23 +72,23 @@ namespace ScenarioBuilder.Core
                     Id = step.Spec.Id,
                     Title = step.Spec.Title,
                     Result = step.Spec.Result,
-                    GroupId = stepGroups[step.Spec.Id]
+                    GroupId = owners[step.Spec.Id].Id
                 });
-            foreach (var group in plan.Groups)
+            foreach (var group in groups)
                 journal.Groups.Add(new GroupSnapshot
                 {
                     Id = group.Id,
                     Title = group.Title,
                     ViolationThreshold = group.ViolationThreshold,
+                    ActivationRule = group.StartRule.ToString(),
+                    AfterStepId = group.StartAfterStepId,
                     StepIds = new List<string>(group.StepIds)
                 });
-            // Loggers receive a complete run snapshot before the first event is written.
             logger.Begin(journal);
             started = true;
-            groupIndex = 0;
-            Append(JournalEvents.SessionStarted, null, "Started", "Сценарий начат.");
-            ActivateBatch();
+            Append(JournalEvents.SessionStarted, null, "Started", "Сценарий начат.", groups[0]);
             LastMessage = "Сценарий начат.";
+            PumpGroups();
             Changed?.Invoke();
         }
 
@@ -97,82 +100,87 @@ namespace ScenarioBuilder.Core
             if (string.IsNullOrWhiteSpace(action.TargetStepId) || !stepsById.TryGetValue(action.TargetStepId, out step))
             {
                 LastMessage = "Источник указал неизвестный шаг: " + (action.TargetStepId ?? "<пусто>") + ".";
-                Append(JournalEvents.ActionIgnored, null, "Ignored", LastMessage, action);
+                Append(JournalEvents.ActionIgnored, null, "Ignored", LastMessage, FirstActiveGroup(), action);
                 Changed?.Invoke();
                 return;
             }
+            var owner = owners[step.Spec.Id];
             if (string.IsNullOrWhiteSpace(action.Signal))
             {
                 LastMessage = "Пустой сигнал проигнорирован.";
-                Append(JournalEvents.ActionIgnored, step, step.Status.ToString(), LastMessage, action);
+                Append(JournalEvents.ActionIgnored, step, step.Status.ToString(), LastMessage, owner, action);
                 Changed?.Invoke();
                 return;
             }
             if (IsTerminal(step.Status))
             {
-                Append(JournalEvents.ActionIgnored, step, step.Status.ToString(), "Шаг уже завершён.", action);
+                Append(JournalEvents.ActionIgnored, step, step.Status.ToString(), "Шаг уже завершён.", owner, action);
                 return;
             }
             if (step.Status == StepStatus.Pending)
             {
                 if (plan.OutOfOrderPolicy == OutOfOrderPolicy.Ignore) return;
-                BeginAttempt(step, action);
+                // A waiting batch belongs to its active owner; a not-yet-started owner uses the earliest active group.
+                var accounting = owner.Status == GroupStatus.Active ? owner : FirstActiveGroup();
+                if (accounting == null) throw new InvalidOperationException("No active group can account for this action.");
+                BeginAttempt(step, accounting, action);
                 step.Violations++;
-                CurrentGroupViolations++;
+                accounting.Violations++;
                 step.HasOpenAttempt = false;
-                var group = plan.Groups[groupIndex];
-                var count = CurrentGroupViolations.ToString(CultureInfo.InvariantCulture);
-                if (stopGroupAtThreshold) count += " из " + group.ViolationThreshold;
+                var count = accounting.Violations.ToString(CultureInfo.InvariantCulture);
+                if (accounting.StopsAtThreshold) count += " из " + accounting.ViolationThreshold;
                 step.ProgressMessage = "Шаг " + StepLabel(step) + " ещё ожидает своей очереди. " +
-                    "Действие вне очереди засчитано текущей группе " + GroupLabel(group) +
+                    "Действие вне очереди засчитано текущей группе " + GroupLabel(accounting) +
                     " (нарушений: " + count + "). Неудачная попытка " + step.Attempts + " засчитана. " +
                     (retryOnViolation ? "Повторите шаг после его активации." : "Шаг завершён с ошибкой; повторной попытки нет.");
                 LastMessage = step.ProgressMessage;
-                Append(JournalEvents.Violation, step, StepStatus.Pending.ToString(), LastMessage, action, "out-of-order");
+                Append(JournalEvents.Violation, step, StepStatus.Pending.ToString(), LastMessage, accounting, action, "out-of-order");
                 if (retryOnViolation) step.Condition.Reset();
                 else
                 {
                     step.Status = StepStatus.Failed;
-                    Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, action);
+                    Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, accounting, action);
                 }
-                if (!CheckThreshold(step, action, "Шаг ещё ожидает своей очереди.")) Advance();
+                CheckThreshold(accounting, step, action, "Шаг ещё ожидает своей очереди.");
+                PumpGroups();
                 Changed?.Invoke();
                 return;
             }
 
-            // Evaluate only the explicitly addressed step. Advancing a batch never replays this input.
+            // Only the addressed step sees the input, even if it unlocks another group or batch.
             var result = step.Condition.Evaluate(action);
             if (result.Kind == ConditionOutcome.Ignore) return;
-            BeginAttempt(step, action);
+            BeginAttempt(step, owner, action);
             switch (result.Kind)
             {
                 case ConditionOutcome.Progress:
                     step.ProgressMessage = result.Message;
                     LastMessage = result.Message;
-                    Append(JournalEvents.ConditionProgress, step, StepStatus.Active.ToString(), result.Message, action);
+                    Append(JournalEvents.ConditionProgress, step, StepStatus.Active.ToString(), result.Message, owner, action);
                     break;
                 case ConditionOutcome.Success:
                     step.Status = StepStatus.Completed;
                     step.HasOpenAttempt = false;
                     step.ProgressMessage = string.IsNullOrWhiteSpace(step.Spec.Result) ? "Шаг выполнен." : step.Spec.Result;
                     LastMessage = step.ProgressMessage;
-                    Append(JournalEvents.StepCompleted, step, step.Status.ToString(), step.ProgressMessage, action);
-                    Advance();
+                    Append(JournalEvents.StepCompleted, step, step.Status.ToString(), step.ProgressMessage, owner, action);
+                    PumpGroups();
                     break;
                 case ConditionOutcome.Violation:
                     step.Violations++;
-                    CurrentGroupViolations++;
+                    owner.Violations++;
                     step.HasOpenAttempt = false;
                     step.ProgressMessage = string.IsNullOrWhiteSpace(result.Message) ? "Условие шага нарушено." : result.Message;
                     LastMessage = step.ProgressMessage;
-                    Append(JournalEvents.Violation, step, step.Status.ToString(), step.ProgressMessage, action, "condition");
+                    Append(JournalEvents.Violation, step, step.Status.ToString(), step.ProgressMessage, owner, action, "condition");
                     if (retryOnViolation) step.Condition.Reset();
                     else
                     {
                         step.Status = StepStatus.Failed;
-                        Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, action);
+                        Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, owner, action);
                     }
-                    if (!CheckThreshold(step, action, step.ProgressMessage)) Advance();
+                    CheckThreshold(owner, step, action, step.ProgressMessage);
+                    PumpGroups();
                     break;
                 default:
                     throw new InvalidOperationException("A condition returned an unknown outcome.");
@@ -180,22 +188,25 @@ namespace ScenarioBuilder.Core
             Changed?.Invoke();
         }
 
-        private void BeginAttempt(StepRuntime step, ScenarioAction action)
+        private void BeginAttempt(StepRuntime step, GroupRuntime group, ScenarioAction action)
         {
             if (step.HasOpenAttempt) return;
             step.Attempts++;
             step.HasOpenAttempt = true;
-            Append(JournalEvents.AttemptStarted, step, step.Status.ToString(), "Начата попытка.", action);
+            Append(JournalEvents.AttemptStarted, step, step.Status.ToString(), "Начата попытка.", group, action);
         }
 
-        private bool CheckThreshold(StepRuntime causeStep, ScenarioAction action, string cause)
+        private void CheckThreshold(GroupRuntime group, StepRuntime causeStep, ScenarioAction action, string cause)
         {
-            if (!stopGroupAtThreshold || CurrentGroupViolations < plan.Groups[groupIndex].ViolationThreshold) return false;
-            var group = plan.Groups[groupIndex];
+            if (!group.StopsAtThreshold || group.Violations < group.ViolationThreshold) return;
+            bool skipped = false;
+            foreach (var id in group.StepIds)
+                if (!IsTerminal(stepsById[id].Status)) { skipped = true; break; }
             var message = "В группе " + GroupLabel(group) + " достигнут порог нарушений " +
-                CurrentGroupViolations + "/" + group.ViolationThreshold + ". " +
+                group.Violations + "/" + group.ViolationThreshold + ". " +
                 "Причина последнего нарушения: " + ActionLabel(action) + " для шага " + StepLabel(causeStep) +
-                ". " + cause + " Поэтому незавершённые шаги этой группы пропущены.";
+                ". " + cause + " " + (skipped ? "Поэтому незавершённые шаги этой группы пропущены."
+                    : "Незавершённых шагов в группе нет.");
             foreach (var id in group.StepIds)
             {
                 var step = stepsById[id];
@@ -203,88 +214,110 @@ namespace ScenarioBuilder.Core
                 step.Status = StepStatus.Skipped;
                 step.HasOpenAttempt = false;
                 step.ProgressMessage = message;
-                Append(JournalEvents.StepSkipped, step, step.Status.ToString(), message);
+                Append(JournalEvents.StepSkipped, step, step.Status.ToString(), message, group);
             }
+            group.Status = skipped ? GroupStatus.Skipped : GroupStatus.Completed;
             LastMessage = message;
-            Advance();
+        }
+
+        private void PumpGroups()
+        {
+            bool changed;
+            do
+            {
+                changed = false;
+                foreach (var group in groups)
+                {
+                    if (group.Status != GroupStatus.Active) continue;
+                    while (BatchIsTerminal(group))
+                    {
+                        group.BatchIndex++;
+                        changed = true;
+                        if (group.BatchIndex == group.Plan.Batches.Count)
+                        {
+                            group.Status = GroupStatus.Completed;
+                            break;
+                        }
+                        ActivateBatch(group);
+                    }
+                }
+                foreach (var group in groups)
+                {
+                    if (group.Status != GroupStatus.Pending || !CanStart(group)) continue;
+                    group.Status = GroupStatus.Active;
+                    group.BatchIndex = 0;
+                    ActivateBatch(group);
+                    changed = true;
+                }
+            } while (changed);
+
+            if (IsFinished) return;
+            foreach (var group in groups)
+                if (!IsClosed(group.Status)) return;
+            IsFinished = true;
+            LastMessage = "Сценарий завершён.";
+            Append(JournalEvents.SessionCompleted, null, "Completed", LastMessage, null);
+            logger.Finish();
+        }
+
+        private bool CanStart(GroupRuntime group)
+        {
+            switch (group.StartRule)
+            {
+                case GroupStartRule.AtStart: return true;
+                case GroupStartRule.AfterPreviousGroup:
+                    return group.Index == 0 || IsClosed(groups[group.Index - 1].Status);
+                case GroupStartRule.AfterStep:
+                    return owners[group.StartAfterStepId].Status != GroupStatus.Pending &&
+                           IsTerminal(stepsById[group.StartAfterStepId].Status);
+                default: throw new InvalidOperationException("Unknown group activation rule.");
+            }
+        }
+
+        private bool BatchIsTerminal(GroupRuntime group)
+        {
+            foreach (var id in group.Plan.Batches[group.BatchIndex].StepIds)
+                if (!IsTerminal(stepsById[id].Status)) return false;
             return true;
         }
 
-        private static string StepLabel(StepRuntime step)
+        private void ActivateBatch(GroupRuntime group)
         {
-            return step.Spec.Id + (string.IsNullOrWhiteSpace(step.Spec.Title) ? string.Empty : " «" + step.Spec.Title + "»");
-        }
-
-        private static string GroupLabel(GroupPlan group)
-        {
-            return group.Id + (string.IsNullOrWhiteSpace(group.Title) ? string.Empty : " «" + group.Title + "»");
-        }
-
-        private static string ActionLabel(ScenarioAction action)
-        {
-            if (action.Signal == "error") return "имитация ошибки («Ошибка»)";
-            if (action.Signal == "confirm") return "подтверждение";
-            return "сигнал «" + action.Signal + "»";
-        }
-
-        private void Advance()
-        {
-            while (groupIndex < plan.Groups.Count)
-            {
-                var group = plan.Groups[groupIndex];
-                var batch = group.Batches[batchIndex];
-                foreach (var id in batch.StepIds)
-                    if (!IsTerminal(stepsById[id].Status)) return;
-                batchIndex++;
-                if (batchIndex < group.Batches.Count)
-                {
-                    ActivateBatch();
-                    continue;
-                }
-                groupIndex++;
-                if (groupIndex == plan.Groups.Count)
-                {
-                    IsFinished = true;
-                    LastMessage = "Сценарий завершён.";
-                    Append(JournalEvents.SessionCompleted, null, "Completed", LastMessage);
-                    logger.Finish();
-                    return;
-                }
-                batchIndex = 0;
-                CurrentGroupViolations = 0;
-                ActivateBatch();
-            }
-        }
-
-        private void ActivateBatch()
-        {
-            foreach (var id in plan.Groups[groupIndex].Batches[batchIndex].StepIds)
+            foreach (var id in group.Plan.Batches[group.BatchIndex].StepIds)
             {
                 var step = stepsById[id];
                 if (IsTerminal(step.Status)) continue;
                 step.Status = StepStatus.Active;
                 step.ProgressMessage = string.Empty;
                 step.Condition.Reset();
-                Append(JournalEvents.StepActivated, step, StepStatus.Active.ToString(), "Шаг активирован.");
+                Append(JournalEvents.StepActivated, step, StepStatus.Active.ToString(), "Шаг активирован.", group);
             }
         }
 
-        private void Append(string type, StepRuntime step, string result, string message, ScenarioAction action = null, string reason = null)
+        private GroupRuntime FirstActiveGroup()
+        {
+            foreach (var group in groups)
+                if (group.Status == GroupStatus.Active) return group;
+            return null;
+        }
+
+        private void Append(string type, StepRuntime step, string result, string message, GroupRuntime group,
+            ScenarioAction action = null, string reason = null)
         {
             var entry = new JournalEntry
             {
                 Sequence = ++sequence,
                 TimestampUtc = Timestamp(),
                 StepId = step?.Spec.Id,
-                GroupId = CurrentGroupId,
+                GroupId = group?.Id,
                 Type = type,
                 Result = result,
                 Attempt = step?.Attempts ?? 0,
                 Violations = step?.Violations ?? 0,
                 Message = message
             };
-            if (step != null) entry.Extra.Add(new JournalField("targetGroupId", stepGroups[step.Spec.Id]));
-            entry.Extra.Add(new JournalField("groupViolations", CurrentGroupViolations.ToString(CultureInfo.InvariantCulture)));
+            if (step != null) entry.Extra.Add(new JournalField("targetGroupId", owners[step.Spec.Id].Id));
+            entry.Extra.Add(new JournalField("groupViolations", (group?.Violations ?? 0).ToString(CultureInfo.InvariantCulture)));
             if (reason != null) entry.Extra.Add(new JournalField("reason", reason));
             if (action != null)
             {
@@ -295,10 +328,15 @@ namespace ScenarioBuilder.Core
         }
 
         private string Timestamp() => utcNow().ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
-
-        private static bool IsTerminal(StepStatus status)
+        private static bool IsTerminal(StepStatus status) => status == StepStatus.Completed || status == StepStatus.Failed || status == StepStatus.Skipped;
+        private static bool IsClosed(GroupStatus status) => status == GroupStatus.Completed || status == GroupStatus.Skipped;
+        private static string StepLabel(StepRuntime step) => step.Spec.Id + (string.IsNullOrWhiteSpace(step.Spec.Title) ? string.Empty : " «" + step.Spec.Title + "»");
+        private static string GroupLabel(GroupRuntime group) => group.Id + (string.IsNullOrWhiteSpace(group.Title) ? string.Empty : " «" + group.Title + "»");
+        private static string ActionLabel(ScenarioAction action)
         {
-            return status == StepStatus.Completed || status == StepStatus.Failed || status == StepStatus.Skipped;
+            if (action.Signal == "error") return "имитация ошибки («Ошибка»)";
+            if (action.Signal == "confirm") return "подтверждение";
+            return "сигнал «" + action.Signal + "»";
         }
 
         private static ScenarioPlan SnapshotPlan(ScenarioPlan source)
@@ -313,6 +351,8 @@ namespace ScenarioBuilder.Core
                     Id = group.Id,
                     Title = group.Title,
                     ViolationThreshold = group.ViolationThreshold,
+                    StartRule = group.StartRule,
+                    StartAfterStepId = group.StartAfterStepId,
                     StepIds = new List<string>(group.StepIds)
                 };
                 foreach (var batch in group.Batches)
@@ -320,6 +360,29 @@ namespace ScenarioBuilder.Core
                 snapshot.Groups.Add(copy);
             }
             return snapshot;
+        }
+
+        private sealed class GroupRuntime : IGroupProgress
+        {
+            public GroupPlan Plan { get; }
+            public int Index { get; }
+            public int BatchIndex { get; set; }
+            public string Id => Plan.Id;
+            public string Title => Plan.Title;
+            public GroupStatus Status { get; set; } = GroupStatus.Pending;
+            public int Violations { get; set; }
+            public int ViolationThreshold => Plan.ViolationThreshold;
+            public bool StopsAtThreshold { get; }
+            public GroupStartRule StartRule => Plan.StartRule;
+            public string StartAfterStepId => Plan.StartAfterStepId;
+            public IReadOnlyList<string> StepIds { get; }
+            public GroupRuntime(GroupPlan plan, int index, bool stopsAtThreshold)
+            {
+                Plan = plan;
+                Index = index;
+                StopsAtThreshold = stopsAtThreshold;
+                StepIds = plan.StepIds.AsReadOnly();
+            }
         }
     }
 }

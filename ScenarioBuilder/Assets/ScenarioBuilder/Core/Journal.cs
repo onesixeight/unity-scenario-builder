@@ -30,6 +30,8 @@ namespace ScenarioBuilder.Core
         public string Id;
         public string Title;
         public int ViolationThreshold;
+        public string ActivationRule;
+        public string AfterStepId;
         public List<string> StepIds = new List<string>();
     }
 
