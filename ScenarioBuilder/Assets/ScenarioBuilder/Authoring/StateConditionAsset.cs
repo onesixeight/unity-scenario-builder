@@ -18,9 +18,13 @@ namespace ScenarioBuilder.Authoring
         [InspectorName("Сигналы нарушения"), Tooltip("Сигналы, которые сразу означают ошибку, независимо от контекста.")]
         public string[] FailureSignals = { "error" };
 
+        [InspectorName("Причина при неверном состоянии"), TextArea(2, 4),
+         Tooltip("Понятное объяснение для пользователя. Если пусто, выводятся ключ состояния и нужное значение.")]
+        public string FailureMessage;
+
         public override IStepCondition CreateCondition()
         {
-            return new StateSignalCondition(SuccessSignal, StateKey, RequiredValue, FailureSignals);
+            return new StateSignalCondition(SuccessSignal, StateKey, RequiredValue, FailureSignals, FailureMessage);
         }
     }
 }

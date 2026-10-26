@@ -118,9 +118,14 @@ namespace ScenarioBuilder.Core
                 if (plan.OutOfOrderPolicy == OutOfOrderPolicy.Ignore) return;
                 step.Violations++;
                 CurrentGroupViolations++;
-                LastMessage = "Шаг '" + step.Spec.Title + "' ещё не активен. Действие вне очереди.";
+                var group = plan.Groups[groupIndex];
+                var count = CurrentGroupViolations.ToString(CultureInfo.InvariantCulture);
+                if (stopGroupAtThreshold) count += " из " + group.ViolationThreshold;
+                LastMessage = "Шаг " + StepLabel(step) + " ещё ожидает своей очереди. " +
+                    "Действие вне очереди засчитано текущей группе " + GroupLabel(group) +
+                    " (нарушений: " + count + "). Попытка шага не начата.";
                 Append(JournalEvents.Violation, step, StepStatus.Pending.ToString(), LastMessage, action, "out-of-order");
-                CheckThreshold();
+                CheckThreshold(step, action, "Шаг ещё ожидает своей очереди.");
                 Changed?.Invoke();
                 return;
             }
@@ -162,7 +167,7 @@ namespace ScenarioBuilder.Core
                         step.Status = StepStatus.Failed;
                         Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, action);
                     }
-                    if (!CheckThreshold()) Advance();
+                    if (!CheckThreshold(step, action, step.ProgressMessage)) Advance();
                     break;
                 default:
                     throw new InvalidOperationException("A condition returned an unknown outcome.");
@@ -170,11 +175,15 @@ namespace ScenarioBuilder.Core
             Changed?.Invoke();
         }
 
-        private bool CheckThreshold()
+        private bool CheckThreshold(StepRuntime causeStep, ScenarioAction action, string cause)
         {
             if (!stopGroupAtThreshold || CurrentGroupViolations < plan.Groups[groupIndex].ViolationThreshold) return false;
-            var message = "Достигнут порог нарушений группы. Оставшиеся шаги пропущены.";
-            foreach (var id in plan.Groups[groupIndex].StepIds)
+            var group = plan.Groups[groupIndex];
+            var message = "В группе " + GroupLabel(group) + " достигнут порог нарушений " +
+                CurrentGroupViolations + "/" + group.ViolationThreshold + ". " +
+                "Причина последнего нарушения: " + ActionLabel(action) + " для шага " + StepLabel(causeStep) +
+                ". " + cause + " Поэтому незавершённые шаги этой группы пропущены.";
+            foreach (var id in group.StepIds)
             {
                 var step = stepsById[id];
                 if (IsTerminal(step.Status)) continue;
@@ -186,6 +195,23 @@ namespace ScenarioBuilder.Core
             LastMessage = message;
             Advance();
             return true;
+        }
+
+        private static string StepLabel(StepRuntime step)
+        {
+            return step.Spec.Id + (string.IsNullOrWhiteSpace(step.Spec.Title) ? string.Empty : " «" + step.Spec.Title + "»");
+        }
+
+        private static string GroupLabel(GroupPlan group)
+        {
+            return group.Id + (string.IsNullOrWhiteSpace(group.Title) ? string.Empty : " «" + group.Title + "»");
+        }
+
+        private static string ActionLabel(ScenarioAction action)
+        {
+            if (action.Signal == "error") return "имитация ошибки («Ошибка»)";
+            if (action.Signal == "confirm") return "подтверждение";
+            return "сигнал «" + action.Signal + "»";
         }
 
         private void Advance()

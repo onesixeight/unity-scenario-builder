@@ -45,6 +45,13 @@ namespace ScenarioBuilder.Tests
             Assert.That(100 - terminal.Sum(entry => entry.Type == JournalEvents.StepFailed ? 10 : 5), Is.EqualTo(70));
             Assert.That(terminal.Where(entry => entry.Result == "Failed").All(entry => entry.Attempt == 1), Is.True);
             Assert.That(terminal.Where(entry => entry.Result == "Skipped").All(entry => entry.Attempt == 0), Is.True);
+            foreach (var skipped in terminal.Where(entry => entry.Type == JournalEvents.StepSkipped))
+            {
+                Assert.That(skipped.Message, Does.Contain("группе group"));
+                Assert.That(skipped.Message, Does.Contain("2/2"));
+                Assert.That(skipped.Message, Does.Contain("s2"));
+                Assert.That(skipped.Message, Does.Contain("bad"));
+            }
         }
 
         [TestCase(OutOfOrderPolicy.Violation, 1)]
@@ -81,6 +88,10 @@ namespace ScenarioBuilder.Tests
             Assert.That(violation.Attempt, Is.Zero);
             Assert.That(violation.Extra.Single(field => field.Key == "targetGroupId").Value, Is.EqualTo("second"));
             Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Pending));
+            Assert.That(violation.Message, Does.Contain("s3"));
+            Assert.That(violation.Message, Does.Contain("ожидает своей очереди"));
+            Assert.That(violation.Message, Does.Contain("текущей группе first"));
+            Assert.That(violation.Message, Does.Contain("Попытка шага не начата"));
 
             Send(session, "s3", "ok");
             Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Skipped));
@@ -89,6 +100,14 @@ namespace ScenarioBuilder.Tests
             Assert.That(session.Steps[2].Attempts, Is.Zero);
             Assert.That(session.CurrentGroupId, Is.EqualTo("second"));
             Assert.That(session.CurrentGroupViolations, Is.Zero);
+            foreach (var skipped in session.Journal.Entries.Where(entry => entry.Type == JournalEvents.StepSkipped))
+            {
+                Assert.That(skipped.Message, Does.Contain("группе first"));
+                Assert.That(skipped.Message, Does.Contain("2/2"));
+                Assert.That(skipped.Message, Does.Contain("s3"));
+                Assert.That(skipped.Message, Does.Contain("ok"));
+                Assert.That(skipped.Message, Does.Contain("ожидает своей очереди"));
+            }
             Send(session, "s3", "ok");
             Assert.That(session.IsFinished, Is.True);
             Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Completed));
@@ -230,6 +249,76 @@ namespace ScenarioBuilder.Tests
             session.Handle(correct);
             Assert.That(session.IsFinished, Is.True);
             Assert.That(session.Steps[0].Attempts, Is.EqualTo(3));
+        }
+
+        [Test]
+        public void ExplicitErrorSignalIsExplainedAsSimulationRatherThanSequenceOrContextFailure()
+        {
+            IStepCondition[] conditions =
+            {
+                new SignalCondition("ok", "error"),
+                new OrderedSignalCondition(new[] { "a", "b" }, "error"),
+                new StateSignalCondition("ok", "custom.state", true, "error")
+            };
+            foreach (var condition in conditions)
+            {
+                var result = condition.Evaluate(new ScenarioAction("s1", "error"));
+                Assert.That(result.Kind, Is.EqualTo(ConditionOutcome.Violation));
+                Assert.That(result.Message, Does.Contain("Имитация ошибки"));
+                Assert.That(result.Message, Does.Not.Contain("Нарушен порядок"));
+                Assert.That(result.Message, Does.Not.Contain("не передано"));
+            }
+            var customFailure = new SignalCondition("ok", "cancel").Evaluate(new ScenarioAction("s1", "cancel"));
+            Assert.That(customFailure.Message, Does.Contain("cancel"));
+            Assert.That(customFailure.Message, Does.Not.Contain("Имитация"));
+        }
+
+        [Test]
+        public void ConfiguredContextFailureMessageIsSavedWithTheFailedStep()
+        {
+            const string explanation = "Не выполнено условие безопасности. Сначала включите защиту.";
+            var plan = Plan(1);
+            plan.Steps[0] = new StepSpec("s1", "Context", "Done",
+                () => new StateSignalCondition("ok", "custom.guard", true, new[] { "error" }, explanation));
+            var session = Start(plan, new ExamExecutionPolicy());
+            var action = new ScenarioAction("s1", "ok");
+            action.State["custom.guard"] = false;
+            session.Handle(action);
+
+            Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Failed));
+            Assert.That(session.Steps[0].Attempts, Is.EqualTo(1));
+            Assert.That(session.Steps[0].ProgressMessage, Is.EqualTo(explanation));
+            Assert.That(session.Journal.Entries.Single(entry => entry.Type == JournalEvents.StepFailed).Message,
+                Is.EqualTo(explanation));
+        }
+
+        [Test]
+        public void ContextWithoutCustomMessageExplainsTheActualAndRequiredValues()
+        {
+            var condition = new StateSignalCondition("ok", "custom.guard", false, new string[0]);
+            var action = new ScenarioAction("s1", "ok");
+            action.State["custom.guard"] = true;
+            var result = condition.Evaluate(action);
+
+            Assert.That(result.Kind, Is.EqualTo(ConditionOutcome.Violation));
+            Assert.That(result.Message, Does.Contain("custom.guard"));
+            Assert.That(result.Message, Does.Contain("требуется «нет»"));
+            Assert.That(result.Message, Does.Contain("получено «да»"));
+            action.State["custom.guard"] = false;
+            Assert.That(condition.Evaluate(action).Kind, Is.EqualTo(ConditionOutcome.Success));
+        }
+
+        [Test]
+        public void MissingContextStateIsExplainedAsMissingDataInsteadOfClaimingAnIncorrectValue()
+        {
+            const string wrongValueMessage = "Защита выключена.";
+            var condition = new StateSignalCondition("ok", "custom.guard", true, new string[0], wrongValueMessage);
+            var result = condition.Evaluate(new ScenarioAction("s1", "ok"));
+
+            Assert.That(result.Kind, Is.EqualTo(ConditionOutcome.Violation));
+            Assert.That(result.Message, Does.Contain("custom.guard"));
+            Assert.That(result.Message, Does.Contain("не передано из сцены"));
+            Assert.That(result.Message, Is.Not.EqualTo(wrongValueMessage));
         }
 
         [Test]

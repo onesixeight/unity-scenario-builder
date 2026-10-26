@@ -33,6 +33,28 @@ namespace ScenarioBuilder.Editor
         private static readonly Color Green = Hex("166B57");
         private static readonly Color Red = Hex("753C49");
         private static readonly Color TextColor = Hex("EEF3FB");
+        private static readonly string[] DemoInstructions =
+        {
+            "Нажмите «Выполнить» для проверки связи.",
+            "Нажмите «Выполнить» для проверки комплекта.",
+            "Нажмите «Выполнить», чтобы передать сигнал.",
+            "Нажмите «Войти в зону» и дождитесь входа.",
+            "Нажмите «К упору» и дождитесь контакта.",
+            "Сначала в зону A, дождитесь входа, затем в зону B.",
+            "Включите «Питание» сверху, затем «Выполнить».",
+            "Нажмите «Выполнить» для подготовки.",
+            "Нажмите «Выполнить», чтобы подтвердить первый узел.",
+            "Включите «Защита» сверху, затем нажмите «К доку».",
+            "Нажмите «Выполнить», чтобы подтвердить второй узел.",
+            "Нажмите «Выполнить», чтобы передать итоговый сигнал."
+        };
+        private const string HelpInstructions =
+            "1. Для первого знакомства выберите «Тренировка», затем «Начать».\n\n" +
+            "2. Выполняйте активные шаги: их кнопки зелёные. Несколько активных можно выполнить в любом порядке. Серые ожидают очереди — преждевременное действие считается нарушением.\n\n" +
+            "3. На S06 войдите в A, дождитесь входа, затем идите в B. Перед S07 включите питание, перед S10 — защиту над стендом.\n\n" +
+            "4. Дождитесь движения участника и физического контакта. Чтобы войти повторно, сначала вернитесь «Домой».\n\n" +
+            "5. Красная «Ошибка» специально имитирует нарушение. В тренировке можно повторить шаг, в экзамене ошибка окончательна.\n\n" +
+            "Журнал справа прокручивается колёсиком или ползунком. Причины ошибок и пропусков остаются возле заданий слева.";
         private static bool tmpImportPending;
 
         [MenuItem("Tools/Учебные сценарии/Открыть или создать демо")]
@@ -109,6 +131,22 @@ namespace ScenarioBuilder.Editor
             Debug.Log("Демонстрация создана: " + ScenePath);
         }
 
+        [MenuItem("Tools/Учебные сценарии/Обновить подсказки и прокрутку демо")]
+        public static void UpgradeDemoUsability()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                throw new InvalidOperationException("Обновите демо вне Play Mode.");
+            RequireSavedScenes();
+            var scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                throw new InvalidOperationException("Сначала откройте демонстрационную сцену.");
+            var hud = scene.GetRootGameObjects().SelectMany(root => root.GetComponentsInChildren<DemoHud>(true)).Single();
+            ApplyUsability(hud);
+            EditorSceneManager.MarkSceneDirty(scene);
+            if (!EditorSceneManager.SaveScene(scene)) throw new IOException("Не удалось сохранить демо.");
+            AssetDatabase.SaveAssets();
+        }
+
         private static void RequireSavedScenes()
         {
             for (var i = 0; i < SceneManager.sceneCount; i++)
@@ -131,11 +169,13 @@ namespace ScenarioBuilder.Editor
             power.StateKey = "power";
             power.RequiredValue = true;
             power.FailureSignals = new[] { "error" };
+            power.FailureMessage = "Сначала включите «Питание» над стендом.";
             var shield = Asset<StateConditionAsset>("Config/Conditions/ShieldRequired.asset", "Контакт при включённой защите");
             shield.SuccessSignal = "confirm";
             shield.StateKey = "shield";
             shield.RequiredValue = true;
             shield.FailureSignals = new[] { "error" };
+            shield.FailureMessage = "Сначала включите «Защита» над стендом, затем двигайтесь к доку.";
 
             var titles = new[]
             {
@@ -143,24 +183,13 @@ namespace ScenarioBuilder.Editor
                 "Коснуться упора", "Пройти зоны A, затем B", "Подтвердить питание", "Подготовить оборудование",
                 "Подтвердить первый узел", "Состыковаться с защитой", "Подтвердить второй узел", "Передать итоговый сигнал"
             };
-            var instructions = new[]
-            {
-                "Нажмите кнопку связи.", "Нажмите кнопку проверки комплекта.", "Вызовите UnityEvent кнопкой сигнала.",
-                "Переместите участника в стартовую зону: действие возникает из OnTriggerEnter.",
-                "Переместите участника к упору: действие возникает из OnCollisionEnter.",
-                "Сначала войдите в Trigger A, затем в Trigger B. Оба входа относятся к одной попытке.",
-                "Включите питание переключателем над стендом и подтвердите действие.",
-                "Передайте сигнал подготовки через UnityEvent.", "Подтвердите первый узел пары.",
-                "Включите защиту и переместите участника к доку. Успех зависит от состояния shield.",
-                "Подтвердите второй узел пары.", "Передайте завершающий сигнал через UnityEvent."
-            };
             var steps = new StepDefinition[12];
             for (var i = 0; i < steps.Length; i++)
             {
                 var step = Asset<StepDefinition>($"Config/Steps/S{i + 1:00}.asset", $"S{i + 1:00} · {titles[i]}");
                 step.Id = $"S{i + 1:00}";
                 step.Title = titles[i];
-                step.Description = instructions[i];
+                step.Description = DemoInstructions[i];
                 step.Result = titles[i] + ": выполнено.";
                 step.Enabled = true;
                 step.Condition = i == 5 ? (StepConditionAsset)ordered : i == 6 ? power : i == 9 ? shield : signal;
@@ -391,7 +420,151 @@ namespace ScenarioBuilder.Editor
             var message = Panel("MessageBar", canvasObject.transform, 0, 1040, 1920, 40, PanelColor, true);
             hud.MessageText = Text("Message", message, "Выберите режим и нажмите «Начать».", 24, 2, 1872, 36, 16, font);
             hud.MessageText.alignment = TextAlignmentOptions.MidlineLeft;
+            ApplyUsability(hud);
             hud.Refresh();
+        }
+
+        private static void ApplyUsability(DemoHud hud)
+        {
+            var canvas = hud.transform;
+            var font = hud.TasksText.font;
+            hud.MessageText.overflowMode = TextOverflowModes.Ellipsis;
+            var header = canvas.Find("Header");
+            var helpButton = header.Find("HelpButton")?.GetComponent<UnityEngine.UI.Button>();
+            if (helpButton == null)
+            {
+                helpButton = Button("HelpButton", header, "Как пройти", 24, 65, 165, 31, Blue, font, 16);
+                UnityEventTools.AddPersistentListener(helpButton.onClick, hud.ToggleHelp);
+            }
+            var subtitle = header.Find("Subtitle").GetComponent<TMP_Text>();
+            SetRect(subtitle.rectTransform, 205, 68, 235, 26);
+            subtitle.text = "Тренировка и экзамен";
+            subtitle.fontSize = 14;
+
+            canvas.Find("TasksPanel/TasksHint").GetComponent<TMP_Text>().text =
+                "Зелёный — активен. Причина ошибки остаётся у шага.";
+            var standHint = canvas.Find("StandHint").GetComponent<TMP_Text>();
+            SetRect(standHint.rectTransform, 530, 555, 848, 28);
+            standHint.text = "Дождитесь входа или контакта. Для повторного входа сначала нажмите «Домой».";
+            SetRect(canvas.Find("ActionsHeading").GetComponent<RectTransform>(), 518, 586, 300, 25);
+            var actionsHint = canvas.Find("ActionsHint").GetComponent<TMP_Text>();
+            SetRect(actionsHint.rectTransform, 820, 586, 558, 36);
+            actionsHint.fontSize = 14;
+            actionsHint.text = "«Ошибка» — имитация нарушения. Действие до очереди — нарушение.";
+
+            var camera = hud.Runner.transform.parent.Find("PhysicalStand/StandCamera").GetComponent<Camera>();
+            camera.rect = new Rect(518f / ReferenceWidth, 1f - 550f / ReferenceHeight,
+                860f / ReferenceWidth, 350f / ReferenceHeight);
+            foreach (var toggle in new[] { hud.PowerToggle, hud.ShieldToggle })
+            {
+                var hitArea = toggle.GetComponent<UnityEngine.UI.Image>();
+                if (hitArea == null) hitArea = toggle.gameObject.AddComponent<UnityEngine.UI.Image>();
+                hitArea.color = Color.clear;
+                hitArea.raycastTarget = true;
+            }
+            var actionsRoot = canvas.Find("StepActions");
+            SetRect(actionsRoot.GetComponent<RectTransform>(), 518, 630, 860, 400);
+            var actionViews = new List<DemoActionView>();
+            for (var index = 0; index < actionsRoot.childCount; index++)
+            {
+                var card = actionsRoot.GetChild(index);
+                SetRect(card.GetComponent<RectTransform>(), index % 3 * 288, index / 3 * 100, 280, 94);
+                var step = card.GetComponentsInChildren<ScenarioEventSource>(true).First().Step;
+                if (index < DemoInstructions.Length)
+                {
+                    step.Description = DemoInstructions[index];
+                    EditorUtility.SetDirty(step);
+                }
+                var label = card.Find("Label").GetComponent<TMP_Text>();
+                if (step.Id == "S07") label.text = "S07 · Подтвердить питание";
+                var hint = card.Find("Hint")?.GetComponent<TMP_Text>();
+                if (hint == null) hint = Text("Hint", card, "", 8, 25, 264, 30, 13, font);
+                hint.enableAutoSizing = true;
+                hint.fontSizeMin = 11;
+                hint.fontSizeMax = 13;
+                hint.overflowMode = TextOverflowModes.Ellipsis;
+                var buttons = card.GetComponentsInChildren<UnityEngine.UI.Button>(true);
+                foreach (var button in buttons)
+                {
+                    var rect = button.GetComponent<RectTransform>();
+                    rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -58);
+                }
+                actionViews.Add(new DemoActionView { Step = step, Hint = hint, Buttons = buttons });
+            }
+            hud.Actions = actionViews.ToArray();
+            ConfigureStateHint("PowerRequired", "Сначала включите «Питание» над стендом.");
+            ConfigureStateHint("ShieldRequired", "Включите «Защита» сверху, затем нажмите «К доку».");
+            foreach (var scroll in canvas.GetComponentsInChildren<UnityEngine.UI.ScrollRect>(true))
+                if (scroll.content != null && scroll.transform.name.EndsWith("Scroll", StringComparison.Ordinal))
+                    ConfigureScrolling(scroll);
+            hud.JournalScroll = hud.JournalText.GetComponentInParent<UnityEngine.UI.ScrollRect>();
+            var right = canvas.Find("ResultsAndJournalPanel");
+            hud.PreviousJournalButton = right.Find("PreviousJournalPage").GetComponent<UnityEngine.UI.Button>();
+            hud.NextJournalButton = right.Find("NextJournalPage").GetComponent<UnityEngine.UI.Button>();
+            hud.PreviousJournalButton.GetComponentInChildren<TMP_Text>().text = "В начало";
+            hud.NextJournalButton.GetComponentInChildren<TMP_Text>().text = "В конец";
+            hud.JournalPageText.fontSize = 13;
+            if (hud.HelpPanel == null)
+            {
+                var overlay = Panel("HelpPanel", canvas, 0, 0, ReferenceWidth, ReferenceHeight,
+                    new Color(0.02f, 0.04f, 0.08f, 0.94f), true);
+                overlay.GetComponent<UnityEngine.UI.Image>().raycastTarget = true;
+                hud.HelpPanel = overlay.gameObject;
+                var box = Panel("HelpCard", overlay, 480, 190, 960, 700, PanelColor);
+                Text("Heading", box, "Как пройти демо", 30, 25, 900, 45, 30, font, FontStyles.Bold);
+                Text("Instructions", box, HelpInstructions,
+                    30, 90, 900, 500, 21, font);
+                var close = Button("CloseHelp", box, "Понятно, к тренажёру", 30, 615, 900, 52, Green, font, 21);
+                UnityEventTools.AddPersistentListener(close.onClick, hud.CloseHelp);
+            }
+            hud.HelpPanel.transform.Find("HelpCard/Instructions").GetComponent<TMP_Text>().text = HelpInstructions;
+            hud.HelpPanel.transform.SetAsLastSibling();
+            hud.HelpPanel.SetActive(true);
+            hud.Refresh();
+            EditorUtility.SetDirty(hud);
+        }
+
+        private static void ConfigureStateHint(string name, string message)
+        {
+            var asset = AssetDatabase.LoadAssetAtPath<StateConditionAsset>(RootPath + "/Config/Conditions/" + name + ".asset");
+            if (asset == null) return;
+            asset.FailureMessage = message;
+            EditorUtility.SetDirty(asset);
+        }
+
+        private static void ConfigureScrolling(UnityEngine.UI.ScrollRect scroll)
+        {
+            // A persistent track makes overflow discoverable and supports dragging as well as the wheel.
+            var track = scroll.transform.Find("Scrollbar")?.GetComponent<UnityEngine.UI.Scrollbar>();
+            if (track == null)
+            {
+                var trackObject = new GameObject("Scrollbar", typeof(RectTransform), typeof(UnityEngine.UI.Image),
+                    typeof(UnityEngine.UI.Scrollbar));
+                trackObject.transform.SetParent(scroll.transform, false);
+                var handle = Panel("Handle", trackObject.transform, 0, 0, 16, 40, Hex("8396AF"));
+                handle.GetComponent<UnityEngine.UI.Image>().raycastTarget = true;
+                Stretch(handle.GetComponent<RectTransform>());
+                track = trackObject.GetComponent<UnityEngine.UI.Scrollbar>();
+                track.handleRect = handle.GetComponent<RectTransform>();
+                track.targetGraphic = handle.GetComponent<UnityEngine.UI.Image>();
+                track.direction = UnityEngine.UI.Scrollbar.Direction.BottomToTop;
+                var navigation = track.navigation;
+                navigation.mode = UnityEngine.UI.Navigation.Mode.None;
+                track.navigation = navigation;
+            }
+            var trackRect = track.GetComponent<RectTransform>();
+            trackRect.anchorMin = new Vector2(1, 0);
+            trackRect.anchorMax = Vector2.one;
+            trackRect.pivot = new Vector2(1, 1);
+            trackRect.offsetMin = new Vector2(-16, 0);
+            trackRect.offsetMax = Vector2.zero;
+            track.GetComponent<UnityEngine.UI.Image>().color = Hex("304056");
+            scroll.verticalScrollbar = track;
+            scroll.verticalScrollbarVisibility = UnityEngine.UI.ScrollRect.ScrollbarVisibility.Permanent;
+            scroll.viewport.offsetMax = new Vector2(-24, 0);
+            scroll.scrollSensitivity = 45;
+            scroll.inertia = false;
+            scroll.content.GetComponent<UnityEngine.UI.VerticalLayoutGroup>().padding = new RectOffset(0, 2, 0, 6);
         }
 
         private static void CreateActions(Transform parent, ScenarioRunner runner, StepDefinition[] steps,

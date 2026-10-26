@@ -23,9 +23,13 @@ namespace ScenarioBuilder.Runtime
         public UnityEngine.UI.Toggle ShieldToggle;
         public ContextState Power;
         public ContextState Shield;
-        private const int PageSize = 9;
-        private int journalPage;
+        public DemoActionView[] Actions;
+        public GameObject HelpPanel;
+        public UnityEngine.UI.ScrollRect JournalScroll;
+        public UnityEngine.UI.Button PreviousJournalButton;
+        public UnityEngine.UI.Button NextJournalButton;
         private int knownEntryCount;
+        private Journal knownJournal;
 
         private void OnEnable()
         {
@@ -87,10 +91,13 @@ namespace ScenarioBuilder.Runtime
             Runner.Reanalyze(Analyzers[index]);
         }
 
-        public void PreviousPage() { journalPage = Mathf.Max(0, journalPage - 1); Refresh(); }
-        public void NextPage() { journalPage++; Refresh(); }
-        public void SetPower(bool value) { if (Power != null) Power.SetValue(value); }
-        public void SetShield(bool value) { if (Shield != null) Shield.SetValue(value); }
+        // Keep method names so existing scene button bindings remain valid.
+        public void PreviousPage() { if (JournalScroll != null) JournalScroll.verticalNormalizedPosition = 1f; }
+        public void NextPage() { if (JournalScroll != null) JournalScroll.verticalNormalizedPosition = 0f; }
+        public void SetPower(bool value) { if (Power != null) Power.SetValue(value); Refresh(); }
+        public void SetShield(bool value) { if (Shield != null) Shield.SetValue(value); Refresh(); }
+        public void ToggleHelp() { if (HelpPanel != null) HelpPanel.SetActive(!HelpPanel.activeSelf); }
+        public void CloseHelp() { if (HelpPanel != null) HelpPanel.SetActive(false); }
 
         private void SelectAnalyzer(int index)
         {
@@ -111,8 +118,8 @@ namespace ScenarioBuilder.Runtime
 
         private void ResetView()
         {
-            journalPage = 0;
             knownEntryCount = 0;
+            knownJournal = null;
             if (PowerToggle != null && Power != null) PowerToggle.SetIsOnWithoutNotify(Power.Value);
             if (ShieldToggle != null && Shield != null) ShieldToggle.SetIsOnWithoutNotify(Shield.Value);
         }
@@ -122,23 +129,30 @@ namespace ScenarioBuilder.Runtime
             if (Runner == null) return;
             if (MessageText != null) MessageText.text = Runner.Message;
             var session = Runner.Session;
+            var viewingImportedJournal = Runner.LastJournal != null &&
+                (session == null || !ReferenceEquals(Runner.LastJournal, session.Journal));
             if (StatusText != null)
-                StatusText.text = session == null ? "Готов к запуску"
+                StatusText.text = viewingImportedJournal ? "Просмотр загруженного журнала · можно сменить анализатор"
+                    : session == null ? "Готов к запуску"
                     : session.IsFinished ? "Прохождение завершено · можно сменить анализатор"
                     : $"Группа: {session.CurrentGroupId}   ·   Нарушений в группе: {session.CurrentGroupViolations}";
 
             if (TasksText != null)
             {
                 var text = new StringBuilder();
-                if (session == null) text.Append("Запустите тренировку или экзамен.\n\nАктивные шаги будут выделены зелёным.\n\nКнопки действий доступны всегда: действие до очереди фиксируется как нарушение.\n\nДля повторного физического входа сначала нажмите «Домой».");
+                if (viewingImportedJournal) text.Append("Открыт сохранённый журнал.\n\nСправа показаны его события и результат. Можно выбрать другой анализатор без повторного прохождения.\n\nЧтобы начать новый сценарий, выберите режим и нажмите «Начать».");
+                else if (session == null) text.Append("1. Для первого знакомства выберите «Тренировка» и нажмите «Начать».\n\n2. Выполняйте зелёные активные шаги. Условия написаны на карточках действий.\n\n3. Перед S07 включите питание, перед S10 — защиту над стендом.\n\nКнопка «Как пройти» открывает краткую инструкцию.");
                 else foreach (var step in session.Steps)
                 {
                     text.Append("<color=").Append(StatusColor(step.Status)).Append("><b>")
                         .Append(step.Spec.Id).Append(" · ").Append(StatusLabel(step.Status)).Append("</b></color>\n")
                         .Append(step.Spec.Title).Append("\n<color=#A6B2C5>Попытки: ")
                         .Append(step.Attempts).Append(" · нарушения: ").Append(step.Violations).Append("</color>\n");
-                    if (!string.IsNullOrEmpty(step.ProgressMessage) && step.Status == StepStatus.Active)
+                    var reason = LastStepReason(step.Spec.Id, step.Status);
+                    if (!string.IsNullOrEmpty(step.ProgressMessage) && step.Status == StepStatus.Active && step.ProgressMessage != reason)
                         text.Append("<size=15>").Append(step.ProgressMessage).Append("</size>\n");
+                    if (!string.IsNullOrEmpty(reason))
+                        text.Append("<size=14><color=#FCD34D>").Append(reason).Append("</color></size>\n");
                     text.Append("<size=6> </size>\n");
                 }
                 TasksText.text = text.ToString();
@@ -146,27 +160,48 @@ namespace ScenarioBuilder.Runtime
 
             var journal = Runner.LastJournal;
             var count = journal?.Entries?.Count ?? 0;
-            var pages = Mathf.Max(1, (count + PageSize - 1) / PageSize);
-            if (count != knownEntryCount) { journalPage = pages - 1; knownEntryCount = count; }
-            journalPage = Mathf.Clamp(journalPage, 0, pages - 1);
-            if (JournalPageText != null) JournalPageText.text = $"{journalPage + 1} / {pages}   ·   {count} записей";
+            if (journal != knownJournal) { knownEntryCount = 0; knownJournal = journal; }
+            var followLatest = count != knownEntryCount &&
+                (knownEntryCount == 0 || JournalScroll == null || JournalScroll.verticalNormalizedPosition < 0.05f ||
+                 JournalScroll.content.rect.height <= JournalScroll.viewport.rect.height + 1f);
+            if (PreviousJournalButton != null) PreviousJournalButton.interactable = count > 0;
+            if (NextJournalButton != null) NextJournalButton.interactable = count > 0;
+            if (JournalPageText != null) JournalPageText.text = $"Записей: {count} · прокрутка колёсиком";
             if (JournalText != null)
             {
                 var text = new StringBuilder();
                 if (count == 0) text.Append("Здесь появятся факты прохождения.\nЖурнал можно сохранить и загрузить после перезапуска приложения.");
-                else for (var i = journalPage * PageSize; i < Mathf.Min(count, (journalPage + 1) * PageSize); i++)
+                else for (var i = 0; i < count; i++)
                 {
                     var entry = journal.Entries[i];
                     if (entry == null) continue;
                     var time = DateTime.TryParse(entry.TimestampUtc, out var parsed) ? parsed.ToLocalTime().ToString("HH:mm:ss") : "—";
                     text.Append("<color=#A6B2C5>").Append(time).Append(" · ").Append(entry.StepId ?? "Сессия")
-                        .Append("</color>\n").Append(EventLabel(entry.Type)).Append(" · ").Append(entry.Result)
-                        .Append("  <size=14>попытка ").Append(entry.Attempt).Append("</size>\n");
+                        .Append("</color>\n").Append(EventLabel(entry.Type)).Append(" · ").Append(StatusLabel(entry.Result));
+                    if (entry.Attempt > 0) text.Append("  <size=14>попытка ").Append(entry.Attempt).Append("</size>");
+                    text.Append('\n');
                     if (!string.IsNullOrEmpty(entry.Message)) text.Append("<size=15>").Append(entry.Message).Append("</size>\n");
                     text.Append("<size=6> </size>\n");
                 }
-                JournalText.text = text.ToString();
+                var value = text.ToString();
+                if (JournalText.text != value)
+                {
+                    JournalText.text = value;
+                    if (JournalScroll != null && JournalScroll.content != null)
+                    {
+                        // TMP needs the final viewport width before reporting wrapped preferred height.
+                        Canvas.ForceUpdateCanvases();
+                        UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(JournalScroll.content);
+                        if (followLatest) JournalScroll.verticalNormalizedPosition = 0f;
+                    }
+                }
             }
+            knownEntryCount = count;
+
+            if (Actions != null)
+                foreach (var action in Actions) RefreshAction(action, viewingImportedJournal);
+            RefreshToggleLabel(PowerToggle, "Питание", Power);
+            RefreshToggleLabel(ShieldToggle, "Защита", Shield);
 
             if (ResultText != null)
             {
@@ -177,12 +212,120 @@ namespace ScenarioBuilder.Runtime
                 {
                     var text = new StringBuilder($"<size=29><b>{result.Score} / {result.Maximum}</b></size>  {result.AnalyzerName}\n");
                     foreach (var row in result.Steps)
-                        text.Append(row.Id).Append("  ").Append(row.Status).Append("  попыток: ").Append(row.Attempts)
+                        text.Append(row.Id).Append("  ").Append(StatusLabel(row.Status)).Append("  попыток: ").Append(row.Attempts)
                             .Append("  балл: ").Append(row.Score).Append("  штраф: ").Append(row.Penalty).Append('\n');
                     foreach (var diagnostic in result.Diagnostics) text.Append(diagnostic).Append('\n');
                     ResultText.text = text.ToString();
                 }
             }
+        }
+
+        private string LastStepReason(string id, StepStatus status)
+        {
+            var entries = Runner.LastJournal?.Entries;
+            if (entries == null) return null;
+            for (var index = entries.Count - 1; index >= 0; index--)
+            {
+                var entry = entries[index];
+                if (entry == null || entry.StepId != id) continue;
+                if (entry.Type == JournalEvents.StepSkipped)
+                {
+                    var count = Field(entry, "groupViolations");
+                    var threshold = "";
+                    foreach (var group in Runner.LastJournal.Groups)
+                        if (group.Id == entry.GroupId) { threshold = group.ViolationThreshold.ToString(); break; }
+                    for (var causeIndex = index - 1; causeIndex >= 0; causeIndex--)
+                    {
+                        var cause = entries[causeIndex];
+                        if (cause == null || cause.Type != JournalEvents.Violation || cause.GroupId != entry.GroupId) continue;
+                        var reason = Field(cause, "reason") == "out-of-order" ? "действие до очереди"
+                            : Field(cause, "signal") == "error" ? "кнопка «Ошибка»" : cause.Message;
+                        return "Порог группы " + entry.GroupId + " (" + count + "/" + threshold + "). Причина: " + cause.StepId + " — " + reason + ".";
+                    }
+                }
+                if (entry.Type == JournalEvents.StepSkipped || entry.Type == JournalEvents.StepFailed ||
+                    entry.Type == JournalEvents.Violation)
+                    return status == StepStatus.Completed ? "Ранее: " + entry.Message : entry.Message;
+            }
+            return null;
+        }
+
+        private static string Field(JournalEntry entry, string key)
+        {
+            if (entry.Extra != null)
+                foreach (var field in entry.Extra)
+                    if (field != null && field.Key == key) return field.Value;
+            return "";
+        }
+
+        private void RefreshAction(DemoActionView view, bool viewingImportedJournal)
+        {
+            if (view == null || view.Step == null) return;
+            IStepProgress progress = null;
+            if (Runner.Session != null && !viewingImportedJournal)
+                foreach (var item in Runner.Session.Steps)
+                    if (item.Spec.Id == view.Step.Id) { progress = item; break; }
+            var color = "#A6B2C5";
+            var hint = viewingImportedJournal ? "Просмотр журнала · новый запуск: «Начать»"
+                : Runner.Session != null ? "Не участвует в этом прохождении"
+                : "Выберите режим и нажмите «Начать».";
+            var buttonColor = new Color32(66, 80, 99, 255);
+            var interactive = Runner.IsRunning && progress != null &&
+                (progress.Status == StepStatus.Active || progress.Status == StepStatus.Pending);
+            if (progress != null)
+            {
+                color = StatusColor(progress.Status);
+                switch (progress.Status)
+                {
+                    case StepStatus.Pending:
+                        hint = "Ожидает очереди · действие даст нарушение";
+                        var mode = Runner.Modes[Runner.SelectedMode];
+                        if (mode.OutOfOrderPolicy == OutOfOrderPolicy.Ignore)
+                            hint = "Ожидает очереди · действие игнорируется";
+                        break;
+                    case StepStatus.Active:
+                        buttonColor = new Color32(22, 107, 87, 255);
+                        hint = "Активен · " + view.Step.Description;
+                        if (!string.IsNullOrEmpty(progress.ProgressMessage)) hint = "Активен · " + progress.ProgressMessage;
+                        if (view.Step.Condition is StateConditionAsset stateCondition)
+                        {
+                            var state = FindState(stateCondition.StateKey);
+                            if (state == null || state.Value != stateCondition.RequiredValue)
+                            {
+                                color = "#FCD34D";
+                                buttonColor = new Color32(126, 91, 36, 255);
+                                hint = "Активен · " + (string.IsNullOrWhiteSpace(stateCondition.FailureMessage)
+                                    ? view.Step.Description : stateCondition.FailureMessage);
+                            }
+                            else hint = "Активен · условие выполнено, можно действовать";
+                        }
+                        break;
+                    default: hint = StatusLabel(progress.Status) + " · подробности слева"; break;
+                }
+            }
+            if (view.Hint != null) view.Hint.text = "<color=" + color + ">" + hint + "</color>";
+            if (view.Buttons == null) return;
+            foreach (var button in view.Buttons)
+            {
+                if (button == null) continue;
+                button.interactable = interactive;
+                if (button.name != "Error" && button.targetGraphic != null) button.targetGraphic.color = buttonColor;
+            }
+        }
+
+        private ContextState FindState(string key)
+        {
+            if (Runner.ContextStates != null)
+                foreach (var state in Runner.ContextStates)
+                    if (state != null && state.Key == key) return state;
+            return null;
+        }
+
+        private static void RefreshToggleLabel(UnityEngine.UI.Toggle toggle, string title, ContextState state)
+        {
+            if (toggle == null || state == null) return;
+            var label = toggle.GetComponentInChildren<TMP_Text>();
+            if (label != null) label.text = title + (state.Value ? " · ВКЛ" : " · выкл");
         }
 
         private static string StatusColor(StepStatus status)
@@ -202,11 +345,17 @@ namespace ScenarioBuilder.Runtime
             switch (status)
             {
                 case StepStatus.Active: return "Активен";
-                case StepStatus.Completed: return "Completed";
-                case StepStatus.Failed: return "Failed";
-                case StepStatus.Skipped: return "Skipped";
+                case StepStatus.Completed: return "Выполнен";
+                case StepStatus.Failed: return "Ошибка";
+                case StepStatus.Skipped: return "Пропущен";
                 default: return "Ожидает";
             }
+        }
+
+        private static string StatusLabel(string status)
+        {
+            if (status == "Started") return "Начато";
+            return Enum.TryParse(status, out StepStatus parsed) ? StatusLabel(parsed) : status;
         }
 
         private static string EventLabel(string type)
@@ -226,5 +375,13 @@ namespace ScenarioBuilder.Runtime
                 default: return type;
             }
         }
+    }
+
+    [Serializable]
+    public sealed class DemoActionView
+    {
+        public StepDefinition Step;
+        public TMP_Text Hint;
+        public UnityEngine.UI.Button[] Buttons;
     }
 }
