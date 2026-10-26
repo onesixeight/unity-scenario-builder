@@ -1,0 +1,6 @@
+{
+  "name": "ScenarioBuilder.Editor",
+  "rootNamespace": "ScenarioBuilder.Editor",
+  "references": ["ScenarioBuilder.Core", "ScenarioBuilder.Authoring", "ScenarioBuilder.Runtime", "Unity.ugui", "Unity.TextMeshPro", "Unity.InputSystem"],
+  "includePlatforms": ["Editor"]
+}

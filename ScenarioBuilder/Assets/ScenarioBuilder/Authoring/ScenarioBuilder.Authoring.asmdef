@@ -1,0 +1,5 @@
+{
+  "name": "ScenarioBuilder.Authoring",
+  "rootNamespace": "ScenarioBuilder.Authoring",
+  "references": ["ScenarioBuilder.Core"]
+}

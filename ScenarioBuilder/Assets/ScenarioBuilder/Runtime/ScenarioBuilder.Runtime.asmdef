@@ -1,0 +1,5 @@
+{
+  "name": "ScenarioBuilder.Runtime",
+  "rootNamespace": "ScenarioBuilder.Runtime",
+  "references": ["ScenarioBuilder.Core", "ScenarioBuilder.Authoring", "Unity.ugui", "Unity.TextMeshPro", "Unity.InputSystem"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "ScenarioBuilder.Tests.EditMode",
+  "rootNamespace": "ScenarioBuilder.Tests",
+  "references": ["ScenarioBuilder.Core", "ScenarioBuilder.Authoring", "ScenarioBuilder.Runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "ScenarioBuilder.Tests.PlayMode",
+  "rootNamespace": "ScenarioBuilder.Tests",
+  "references": ["ScenarioBuilder.Core", "ScenarioBuilder.Authoring", "ScenarioBuilder.Runtime", "Unity.ugui"],
+  "includePlatforms": [],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

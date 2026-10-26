@@ -4,7 +4,7 @@ using System.Globalization;
 
 namespace ScenarioBuilder.Core
 {
-    public sealed class ScenarioSession
+    public sealed class ScenarioSession : IScenarioExecutor
     {
         private readonly ScenarioPlan plan;
         private readonly RunMode mode;
