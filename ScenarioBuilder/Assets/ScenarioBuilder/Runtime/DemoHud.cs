@@ -44,6 +44,12 @@ namespace ScenarioBuilder.Runtime
             if (AnalyzerPicker != null)
             {
                 AnalyzerPicker.ClearOptions();
+                if (Runner.Analyzer != null && (Analyzers == null || Array.IndexOf(Analyzers, Runner.Analyzer) < 0))
+                {
+                    var configured = new System.Collections.Generic.List<ResultAnalyzerAsset>(Analyzers ?? Array.Empty<ResultAnalyzerAsset>());
+                    configured.Add(Runner.Analyzer);
+                    Analyzers = configured.ToArray();
+                }
                 var labels = new System.Collections.Generic.List<string>();
                 if (Analyzers != null)
                     foreach (var analyzer in Analyzers) labels.Add(analyzer != null ? analyzer.name : "Не назначен");
@@ -52,7 +58,10 @@ namespace ScenarioBuilder.Runtime
             }
             if (PowerToggle != null) PowerToggle.onValueChanged.AddListener(SetPower);
             if (ShieldToggle != null) ShieldToggle.onValueChanged.AddListener(SetShield);
-            SelectModeDefaults(ModePicker != null ? ModePicker.value : 0);
+            var configuredIndex = Analyzers != null ? Array.IndexOf(Analyzers, Runner.Analyzer) : -1;
+            if (configuredIndex >= 0 && AnalyzerPicker != null)
+                AnalyzerPicker.SetValueWithoutNotify(configuredIndex);
+            else SelectModeDefaults(ModePicker != null ? ModePicker.value : 0);
             Refresh();
         }
 

@@ -1,0 +1,16 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d6c03db7d98264b4597f2b327e5427ae, type: 3}
+  m_Name: "\u0416\u0443\u0440\u043D\u0430\u043B \u0441 \u0437\u0430\u043F\u0438\u0441\u044C\u044E
+    \u0432 JSON"
+  m_EditorClassIdentifier: ScenarioBuilder.Authoring::ScenarioBuilder.Authoring.JsonLoggerAsset
+  FileName: AutoSavedScenarioJournal.json

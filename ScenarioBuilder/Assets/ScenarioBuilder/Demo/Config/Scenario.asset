@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 297dd421464a89f48ac9d79dc59ff168, type: 3}
+  m_Name: "\u0414\u0435\u043C\u043E\u043D\u0441\u0442\u0440\u0430\u0446\u0438\u043E\u043D\u043D\u044B\u0439
+    \u0441\u0446\u0435\u043D\u0430\u0440\u0438\u0439 \xB7 12 \u0448\u0430\u0433\u043E\u0432"
+  m_EditorClassIdentifier: ScenarioBuilder.Authoring::ScenarioBuilder.Authoring.ScenarioDefinition
+  Steps:
+  - {fileID: 11400000, guid: ef50bc0072d2e394593be299c5f3fb78, type: 2}
+  - {fileID: 11400000, guid: 155ef0bb376eeea479a2ddf1ae4ef349, type: 2}
+  - {fileID: 11400000, guid: 6040a6b4b3f860b4da14729f8b6aaf8c, type: 2}
+  - {fileID: 11400000, guid: e51ca2ba7c584f04bb84585144d61c1d, type: 2}
+  - {fileID: 11400000, guid: 1d73c78dbb5d681458e55eeb2e07ca8a, type: 2}
+  - {fileID: 11400000, guid: 4f8b9bbfcfef92d41a21a7ff5dfc29b1, type: 2}
+  - {fileID: 11400000, guid: e447dc4b41431a741afd5a78b063ccb6, type: 2}
+  - {fileID: 11400000, guid: d1bbe487f7feb7244945d6e62031a888, type: 2}
+  - {fileID: 11400000, guid: d7fa3f54097b50140a736ccd6f00f732, type: 2}
+  - {fileID: 11400000, guid: 1c2e2a63006b2c3439f0503461171900, type: 2}
+  - {fileID: 11400000, guid: 71435d73704b2a947bb746a4af1857f5, type: 2}
+  - {fileID: 11400000, guid: a9352a0ada1b4514b8f76e8e6512ca50, type: 2}

@@ -206,7 +206,7 @@ namespace ScenarioBuilder.Core
         }
     }
 
-    public sealed class StepRuntime
+    public sealed class StepRuntime : IStepProgress
     {
         public StepSpec Spec { get; }
         public StepStatus Status { get; internal set; } = StepStatus.Pending;

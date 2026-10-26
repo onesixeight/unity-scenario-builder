@@ -22,6 +22,7 @@ namespace ScenarioBuilder.Core
         private bool started;
 
         public IReadOnlyList<StepRuntime> Steps { get; }
+        IReadOnlyList<IStepProgress> IScenarioExecutor.Steps => Steps;
         public Journal Journal => logger.Journal;
         public bool IsFinished { get; private set; }
         public string CurrentGroupId => groupIndex >= 0 && groupIndex < plan.Groups.Count ? plan.Groups[groupIndex].Id : null;

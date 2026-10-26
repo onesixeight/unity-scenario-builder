@@ -6,9 +6,7 @@ using NUnit.Framework;
 using ScenarioBuilder.Authoring;
 using ScenarioBuilder.Core;
 using ScenarioBuilder.Runtime;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using UnityEngine.TestTools;
 
 namespace ScenarioBuilder.Tests
@@ -20,15 +18,10 @@ namespace ScenarioBuilder.Tests
         private ScenarioRunner runner;
         private RunnerTestLoggerAsset logger;
         private RunnerTestAnalyzerAsset analyzer;
-        private Scene previousScene;
-        private Scene testScene;
 
         [SetUp]
         public void SetUp()
         {
-            previousScene = SceneManager.GetActiveScene();
-            testScene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
-            SceneManager.SetActiveScene(testScene);
             runner = CreateObject("Runner test").AddComponent<ScenarioRunner>();
             logger = CreateAsset<RunnerTestLoggerAsset>();
             analyzer = CreateAsset<RunnerTestAnalyzerAsset>();
@@ -39,20 +32,10 @@ namespace ScenarioBuilder.Tests
         [TearDown]
         public void TearDown()
         {
-            try
-            {
-                foreach (var item in objects) UnityEngine.Object.DestroyImmediate(item);
-                objects.Clear();
-                foreach (var asset in assets) UnityEngine.Object.DestroyImmediate(asset);
-                assets.Clear();
-            }
-            finally
-            {
-                if (testScene.IsValid() && testScene.isLoaded)
-                    EditorSceneManager.CloseScene(testScene, true);
-                if (previousScene.IsValid() && previousScene.isLoaded)
-                    SceneManager.SetActiveScene(previousScene);
-            }
+            foreach (var item in objects) UnityEngine.Object.DestroyImmediate(item);
+            objects.Clear();
+            foreach (var asset in assets) UnityEngine.Object.DestroyImmediate(asset);
+            assets.Clear();
         }
 
         [Test]
@@ -301,6 +284,7 @@ namespace ScenarioBuilder.Tests
         private GameObject CreateObject(string name)
         {
             var item = new GameObject(name);
+            item.hideFlags = HideFlags.DontSave;
             objects.Add(item);
             return item;
         }
@@ -382,7 +366,7 @@ namespace ScenarioBuilder.Tests
             private readonly IScenarioExecutor inner;
             public int StartCalls { get; private set; }
             public int HandleCalls { get; private set; }
-            public IReadOnlyList<StepRuntime> Steps => inner.Steps;
+            public IReadOnlyList<IStepProgress> Steps => inner.Steps;
             public Journal Journal => inner.Journal;
             public bool IsFinished => inner.IsFinished;
             public string CurrentGroupId => inner.CurrentGroupId;
