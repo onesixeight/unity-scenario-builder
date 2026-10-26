@@ -476,7 +476,11 @@ namespace ScenarioBuilder.Editor
                     EditorUtility.SetDirty(step);
                 }
                 var label = card.Find("Label").GetComponent<TMP_Text>();
-                if (step.Id == "S07") label.text = "S07 · Подтвердить питание";
+                label.enableAutoSizing = true;
+                label.fontSizeMin = 12;
+                label.fontSizeMax = 15;
+                label.textWrappingMode = TextWrappingModes.NoWrap;
+                label.overflowMode = TextOverflowModes.Ellipsis;
                 var hint = card.Find("Hint")?.GetComponent<TMP_Text>();
                 if (hint == null) hint = Text("Hint", card, "", 8, 25, 264, 30, 13, font);
                 hint.enableAutoSizing = true;
@@ -489,7 +493,7 @@ namespace ScenarioBuilder.Editor
                     var rect = button.GetComponent<RectTransform>();
                     rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -58);
                 }
-                actionViews.Add(new DemoActionView { Step = step, Hint = hint, Buttons = buttons });
+                actionViews.Add(new DemoActionView { Step = step, Title = label, Hint = hint, Buttons = buttons });
             }
             hud.Actions = actionViews.ToArray();
             ConfigureStateHint("PowerRequired", "Сначала включите «Питание» над стендом.");

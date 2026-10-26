@@ -116,16 +116,26 @@ namespace ScenarioBuilder.Core
             if (step.Status == StepStatus.Pending)
             {
                 if (plan.OutOfOrderPolicy == OutOfOrderPolicy.Ignore) return;
+                BeginAttempt(step, action);
                 step.Violations++;
                 CurrentGroupViolations++;
+                step.HasOpenAttempt = false;
                 var group = plan.Groups[groupIndex];
                 var count = CurrentGroupViolations.ToString(CultureInfo.InvariantCulture);
                 if (stopGroupAtThreshold) count += " из " + group.ViolationThreshold;
-                LastMessage = "Шаг " + StepLabel(step) + " ещё ожидает своей очереди. " +
+                step.ProgressMessage = "Шаг " + StepLabel(step) + " ещё ожидает своей очереди. " +
                     "Действие вне очереди засчитано текущей группе " + GroupLabel(group) +
-                    " (нарушений: " + count + "). Попытка шага не начата.";
+                    " (нарушений: " + count + "). Неудачная попытка " + step.Attempts + " засчитана. " +
+                    (retryOnViolation ? "Повторите шаг после его активации." : "Шаг завершён с ошибкой; повторной попытки нет.");
+                LastMessage = step.ProgressMessage;
                 Append(JournalEvents.Violation, step, StepStatus.Pending.ToString(), LastMessage, action, "out-of-order");
-                CheckThreshold(step, action, "Шаг ещё ожидает своей очереди.");
+                if (retryOnViolation) step.Condition.Reset();
+                else
+                {
+                    step.Status = StepStatus.Failed;
+                    Append(JournalEvents.StepFailed, step, step.Status.ToString(), step.ProgressMessage, action);
+                }
+                if (!CheckThreshold(step, action, "Шаг ещё ожидает своей очереди.")) Advance();
                 Changed?.Invoke();
                 return;
             }
@@ -133,12 +143,7 @@ namespace ScenarioBuilder.Core
             // Evaluate only the explicitly addressed step. Advancing a batch never replays this input.
             var result = step.Condition.Evaluate(action);
             if (result.Kind == ConditionOutcome.Ignore) return;
-            if (!step.HasOpenAttempt)
-            {
-                step.Attempts++;
-                step.HasOpenAttempt = true;
-                Append(JournalEvents.AttemptStarted, step, StepStatus.Active.ToString(), "Начата попытка.", action);
-            }
+            BeginAttempt(step, action);
             switch (result.Kind)
             {
                 case ConditionOutcome.Progress:
@@ -173,6 +178,14 @@ namespace ScenarioBuilder.Core
                     throw new InvalidOperationException("A condition returned an unknown outcome.");
             }
             Changed?.Invoke();
+        }
+
+        private void BeginAttempt(StepRuntime step, ScenarioAction action)
+        {
+            if (step.HasOpenAttempt) return;
+            step.Attempts++;
+            step.HasOpenAttempt = true;
+            Append(JournalEvents.AttemptStarted, step, step.Status.ToString(), "Начата попытка.", action);
         }
 
         private bool CheckThreshold(StepRuntime causeStep, ScenarioAction action, string cause)
@@ -250,6 +263,7 @@ namespace ScenarioBuilder.Core
                 var step = stepsById[id];
                 if (IsTerminal(step.Status)) continue;
                 step.Status = StepStatus.Active;
+                step.ProgressMessage = string.Empty;
                 step.Condition.Reset();
                 Append(JournalEvents.StepActivated, step, StepStatus.Active.ToString(), "Шаг активирован.");
             }

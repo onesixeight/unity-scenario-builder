@@ -56,7 +56,7 @@ namespace ScenarioBuilder.Tests
 
         [TestCase(OutOfOrderPolicy.Violation, 1)]
         [TestCase(OutOfOrderPolicy.Ignore, 0)]
-        public void WaitingStepRespectsOutOfOrderPolicyWithoutStartingItsAttempt(OutOfOrderPolicy policy, int violations)
+        public void WaitingStepPolicyDecidesWhetherToCountAFailedAttempt(OutOfOrderPolicy policy, int violations)
         {
             var plan = Plan(2);
             plan.OutOfOrderPolicy = policy;
@@ -65,52 +65,106 @@ namespace ScenarioBuilder.Tests
 
             Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Active));
             Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Pending));
-            Assert.That(session.Steps[1].Attempts, Is.Zero);
+            Assert.That(session.Steps[1].Attempts, Is.EqualTo(violations));
             Assert.That(session.Steps[1].Violations, Is.EqualTo(violations));
             Assert.That(session.CurrentGroupViolations, Is.EqualTo(violations));
             Assert.That(session.Journal.Entries.Count(entry => entry.Type == JournalEvents.Violation), Is.EqualTo(violations));
+            Assert.That(session.Journal.Entries.Count(entry => entry.Type == JournalEvents.AttemptStarted), Is.EqualTo(violations));
+            if (violations > 0)
+                Assert.That(session.Steps[1].ProgressMessage, Does.Contain("ожидает своей очереди"));
         }
 
         [Test]
-        public void FutureGroupActionCountsAgainstCurrentGroupAndDoesNotFailFutureStep()
+        public void PrematureExamStepInTheCurrentGroupFailsAndCannotBeRetried()
         {
-            var plan = Plan(3);
+            var session = Start(Plan(2), new ExamExecutionPolicy());
+            Send(session, "s2", "bad");
+
+            Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Active));
+            Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Failed));
+            Assert.That(session.Steps[1].Attempts, Is.EqualTo(1));
+            Assert.That(session.CurrentGroupViolations, Is.EqualTo(1));
+            Assert.That(session.Journal.Entries.Single(entry => entry.Type == JournalEvents.StepFailed).Attempt, Is.EqualTo(1));
+            Send(session, "s2", "ok");
+            Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Failed));
+            Assert.That(session.Steps[1].Attempts, Is.EqualTo(1));
+            Assert.That(session.CurrentGroupViolations, Is.EqualTo(1));
+            Send(session, "s1", "ok");
+
+            Assert.That(session.IsFinished, Is.True);
+            Assert.That(session.Journal.Entries.Any(entry => entry.Type == JournalEvents.StepCompleted && entry.StepId == "s2"), Is.False);
+            var result = new ExamResultAnalyzer().Analyze(session.Journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(90));
+        }
+
+        [Test]
+        public void PrematureTrainingActionConsumesAnAttemptAndLaterSuccessScoresFive()
+        {
+            var session = Start(Plan(2), new TrainingExecutionPolicy());
+            Send(session, "s2", "bad");
+
+            Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Pending));
+            Assert.That(session.Steps[1].Attempts, Is.EqualTo(1));
+            Send(session, "s1", "ok");
+            Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Active));
+            Assert.That(session.Steps[1].ProgressMessage, Is.Empty);
+            Send(session, "s2", "ok");
+
+            Assert.That(session.IsFinished, Is.True);
+            Assert.That(session.Steps[1].Attempts, Is.EqualTo(2));
+            var result = new TrainingResultAnalyzer().Analyze(session.Journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Steps.Single(step => step.Id == "s2").Score, Is.EqualTo(5));
+            Assert.That(result.Score, Is.EqualTo(15));
+        }
+
+        [Test]
+        public void FutureGroupActionFailsItsTargetOnceAndCountsAgainstTheCurrentGroup()
+        {
+            var plan = Plan(4);
             plan.Groups = new List<GroupPlan>
             {
                 Group("first", new[] { "s1", "s2" }, new ActivationBatch("s1"), new ActivationBatch("s2")),
-                Group("second", new[] { "s3" }, new ActivationBatch("s3"))
+                Group("second", new[] { "s3", "s4" }, new ActivationBatch("s3"), new ActivationBatch("s4"))
             };
             var session = Start(plan, new ExamExecutionPolicy());
             Send(session, "s3", "ok");
             var violation = session.Journal.Entries.Single(entry => entry.Type == JournalEvents.Violation);
             Assert.That(violation.GroupId, Is.EqualTo("first"));
             Assert.That(violation.StepId, Is.EqualTo("s3"));
-            Assert.That(violation.Attempt, Is.Zero);
+            Assert.That(violation.Attempt, Is.EqualTo(1));
             Assert.That(violation.Extra.Single(field => field.Key == "targetGroupId").Value, Is.EqualTo("second"));
-            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Pending));
+            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Failed));
             Assert.That(violation.Message, Does.Contain("s3"));
             Assert.That(violation.Message, Does.Contain("ожидает своей очереди"));
             Assert.That(violation.Message, Does.Contain("текущей группе first"));
-            Assert.That(violation.Message, Does.Contain("Попытка шага не начата"));
+            Assert.That(violation.Message, Does.Contain("Неудачная попытка 1 засчитана"));
 
             Send(session, "s3", "ok");
-            Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Skipped));
+            Assert.That(session.Steps[2].Attempts, Is.EqualTo(1));
+            Assert.That(session.CurrentGroupViolations, Is.EqualTo(1));
+            Send(session, "s1", "bad");
+            Assert.That(session.Steps[0].Status, Is.EqualTo(StepStatus.Failed));
             Assert.That(session.Steps[1].Status, Is.EqualTo(StepStatus.Skipped));
-            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Active));
-            Assert.That(session.Steps[2].Attempts, Is.Zero);
+            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Failed));
+            Assert.That(session.Steps[3].Status, Is.EqualTo(StepStatus.Active));
+            Assert.That(session.Steps[3].Attempts, Is.Zero);
             Assert.That(session.CurrentGroupId, Is.EqualTo("second"));
             Assert.That(session.CurrentGroupViolations, Is.Zero);
             foreach (var skipped in session.Journal.Entries.Where(entry => entry.Type == JournalEvents.StepSkipped))
             {
                 Assert.That(skipped.Message, Does.Contain("группе first"));
                 Assert.That(skipped.Message, Does.Contain("2/2"));
-                Assert.That(skipped.Message, Does.Contain("s3"));
-                Assert.That(skipped.Message, Does.Contain("ok"));
-                Assert.That(skipped.Message, Does.Contain("ожидает своей очереди"));
+                Assert.That(skipped.Message, Does.Contain("s1"));
+                Assert.That(skipped.Message, Does.Contain("bad"));
             }
-            Send(session, "s3", "ok");
+            Send(session, "s4", "ok");
             Assert.That(session.IsFinished, Is.True);
-            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Completed));
+            Assert.That(session.Steps[2].Status, Is.EqualTo(StepStatus.Failed));
+            var result = new ExamResultAnalyzer().Analyze(session.Journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(75));
         }
 
         [Test]

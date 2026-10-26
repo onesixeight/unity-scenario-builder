@@ -13,6 +13,8 @@ namespace ScenarioBuilder.Core
             public int StartedAttempt;
             public int FailedAttempt;
             public int CountedViolations;
+            public readonly HashSet<int> StartedAttempts = new HashSet<int>();
+            public readonly HashSet<int> FailedAttempts = new HashSet<int>();
         }
 
         public static AnalysisResult Read(Journal journal, string analyzerName, int maximum)
@@ -114,29 +116,47 @@ namespace ScenarioBuilder.Core
                     Error(result, "Событие относится к шагу, которого нет в снимке: " + (entry.StepId ?? "<нет ID>") + ".");
                     continue;
                 }
+                if (step.Terminal != null)
+                {
+                    Error(result, "Событие шага записано после его итогового статуса: " + entry.StepId + ".");
+                    continue;
+                }
                 if (entry.Attempt < 0 || entry.Violations < 0)
                     Error(result, "Отрицательный счётчик в шаге " + entry.StepId + ".");
                 step.Row.Violations = Math.Max(step.Row.Violations, Math.Max(0, entry.Violations));
                 if (entry.Type == JournalEvents.Violation)
                 {
-                    // Pending-step violations legitimately have Attempt=0 and the CURRENT group ID.
+                    // Older journals may record pending violations with Attempt=0.
                     step.CountedViolations++;
-                    if (entry.Attempt > 0) step.FailedAttempt = Math.Max(step.FailedAttempt, entry.Attempt);
+                    if (entry.Attempt > 0)
+                    {
+                        if (!step.FailedAttempts.Add(entry.Attempt))
+                            Error(result, "Повторное нарушение уже закрытой попытки " + entry.Attempt +
+                                " в шаге " + entry.StepId + ".");
+                        step.FailedAttempt = Math.Max(step.FailedAttempt, entry.Attempt);
+                    }
                     continue;
                 }
                 if (entry.Type == JournalEvents.AttemptStarted)
                 {
                     if (entry.Attempt <= 0) Error(result, "Номер начавшейся попытки должен быть положительным: " + entry.StepId + ".");
+                    else if (step.FailedAttempts.Contains(entry.Attempt))
+                        Error(result, "Повторно начата уже закрытая ошибкой попытка " + entry.Attempt +
+                            " в шаге " + entry.StepId + ".");
+                    else if (!step.StartedAttempts.Add(entry.Attempt))
+                        Error(result, "Попытка " + entry.Attempt + " начата несколько раз в шаге " + entry.StepId + ".");
                     step.StartedAttempt = Math.Max(step.StartedAttempt, entry.Attempt);
+                    continue;
+                }
+                if (entry.Type == JournalEvents.ConditionProgress)
+                {
+                    if (entry.Attempt > 0 && step.FailedAttempts.Contains(entry.Attempt))
+                        Error(result, "Прогресс относится к уже закрытой ошибкой попытке " + entry.Attempt +
+                            " в шаге " + entry.StepId + ".");
                     continue;
                 }
                 string status = TerminalStatus(entry.Type);
                 if (status == null) continue;
-                if (step.Terminal != null)
-                {
-                    Error(result, "Для шага записано несколько терминальных событий: " + entry.StepId + ".");
-                    continue;
-                }
                 step.Terminal = entry;
                 step.Row.Status = status;
                 step.Row.Attempts = Math.Max(0, entry.Attempt);

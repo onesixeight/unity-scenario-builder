@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using NUnit.Framework;
 using ScenarioBuilder.Authoring;
+using ScenarioBuilder.Core;
 using ScenarioBuilder.Runtime;
 using TMPro;
 using UnityEngine;
@@ -139,7 +140,32 @@ namespace ScenarioBuilder.Tests
             Assert.That(fixture.Runner.LastJournal.Entries.Count, Is.EqualTo(entryCount));
         }
 
-        private Fixture CreateFixture(bool context = false)
+        [UnityTest]
+        public IEnumerator OptionalGroupMetadataDoesNotBreakSkippedStepDisplayOrAnalysis()
+        {
+            for (var variant = 0; variant < 2; variant++)
+            {
+                var fixture = CreateFixture(exam: true);
+                fixture.Runner.LastJournal.Groups = variant == 0 ? null : new List<GroupSnapshot> { null };
+                fixture.Runner.Submit(fixture.Step, Marker(0));
+                yield return SettleLayout(fixture);
+
+                Assert.That(fixture.Runner.Session.IsFinished, Is.True);
+                Assert.That(fixture.Runner.LastAnalysis.IsValid, Is.True);
+                Assert.That(fixture.Runner.LastAnalysis.Score, Is.EqualTo(85));
+                Assert.That(fixture.Runner.Session.Steps[1].Status, Is.EqualTo(StepStatus.Skipped));
+                Assert.That(fixture.Hud.TasksText.text, Does.Contain("Пропущен"));
+                Assert.That(fixture.JournalText.text, Does.Contain("Пропуск"));
+                Assert.DoesNotThrow(fixture.Hud.Refresh);
+                if (variant == 0)
+                {
+                    Assert.That(fixture.Runner.LastAnalysis.Diagnostics, Has.Some.Contains("снимка групп"));
+                    Assert.That(fixture.Hud.ResultText.text, Does.Contain("снимка групп"));
+                }
+            }
+        }
+
+        private Fixture CreateFixture(bool context = false, bool exam = false)
         {
             // Use the configured standard font; shared TMP resources belong to the project.
             var font = TMP_Settings.defaultFontAsset;
@@ -170,20 +196,29 @@ namespace ScenarioBuilder.Tests
             }
             var scenario = Asset<ScenarioDefinition>();
             scenario.Steps.Add(step);
+            if (exam)
+            {
+                var peer = Asset<StepDefinition>();
+                peer.Id = "skipped-peer";
+                peer.Title = "Skipped peer";
+                peer.Condition = step.Condition;
+                scenario.Steps.Add(peer);
+            }
             var mode = Asset<ModeDefinition>();
             mode.DisplayName = "HUD training";
             mode.Scenario = scenario;
-            mode.ExecutionPolicy = Asset<TrainingPolicyAsset>();
+            mode.ExecutionPolicy = exam ? (ExecutionPolicyAsset)Asset<ExamPolicyAsset>() : Asset<TrainingPolicyAsset>();
             mode.Groups.Add(new StepGroup
             {
                 Id = "training", Title = "Training",
-                Steps = new List<StepDefinition> { step },
-                Batches = new List<StepBatch> { new StepBatch { Steps = new List<StepDefinition> { step } } }
+                ViolationThreshold = exam ? 1 : 2,
+                Steps = new List<StepDefinition>(scenario.Steps),
+                Batches = new List<StepBatch> { new StepBatch { Steps = new List<StepDefinition>(scenario.Steps) } }
             });
             var runner = Object("HUD runner").AddComponent<ScenarioRunner>();
             runner.Modes = new[] { mode };
             runner.Logger = Asset<MemoryLoggerAsset>();
-            runner.Analyzer = Asset<TrainingAnalyzerAsset>();
+            runner.Analyzer = exam ? (ResultAnalyzerAsset)Asset<ExamAnalyzerAsset>() : Asset<TrainingAnalyzerAsset>();
             var power = Object("HUD power").AddComponent<ContextState>();
             power.Key = "power";
             power.InitialValue = false;
@@ -241,6 +276,8 @@ namespace ScenarioBuilder.Tests
             hud.Runner = runner;
             hud.Analyzers = new[] { runner.Analyzer };
             hud.JournalText = journalText;
+            hud.TasksText = Text("Tasks text", canvasObject.transform, font);
+            hud.ResultText = Text("Result text", canvasObject.transform, font);
             hud.JournalScroll = scroll;
             hud.Power = power;
             hud.PowerToggle = toggle;

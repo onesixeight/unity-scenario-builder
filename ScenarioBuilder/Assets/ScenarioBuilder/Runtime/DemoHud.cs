@@ -149,7 +149,8 @@ namespace ScenarioBuilder.Runtime
                         .Append(step.Spec.Title).Append("\n<color=#A6B2C5>Попытки: ")
                         .Append(step.Attempts).Append(" · нарушения: ").Append(step.Violations).Append("</color>\n");
                     var reason = LastStepReason(step.Spec.Id, step.Status);
-                    if (!string.IsNullOrEmpty(step.ProgressMessage) && step.Status == StepStatus.Active && step.ProgressMessage != reason)
+                    if (!string.IsNullOrEmpty(step.ProgressMessage) && step.Status == StepStatus.Active &&
+                        (reason == null || !reason.EndsWith(step.ProgressMessage, StringComparison.Ordinal)))
                         text.Append("<size=15>").Append(step.ProgressMessage).Append("</size>\n");
                     if (!string.IsNullOrEmpty(reason))
                         text.Append("<size=14><color=#FCD34D>").Append(reason).Append("</color></size>\n");
@@ -232,8 +233,10 @@ namespace ScenarioBuilder.Runtime
                 {
                     var count = Field(entry, "groupViolations");
                     var threshold = "";
-                    foreach (var group in Runner.LastJournal.Groups)
-                        if (group.Id == entry.GroupId) { threshold = group.ViolationThreshold.ToString(); break; }
+                    if (Runner.LastJournal.Groups != null)
+                        foreach (var group in Runner.LastJournal.Groups)
+                            if (group != null && group.Id == entry.GroupId) { threshold = group.ViolationThreshold.ToString(); break; }
+                    if (string.IsNullOrEmpty(count) || string.IsNullOrEmpty(threshold)) return entry.Message;
                     for (var causeIndex = index - 1; causeIndex >= 0; causeIndex--)
                     {
                         var cause = entries[causeIndex];
@@ -245,7 +248,8 @@ namespace ScenarioBuilder.Runtime
                 }
                 if (entry.Type == JournalEvents.StepSkipped || entry.Type == JournalEvents.StepFailed ||
                     entry.Type == JournalEvents.Violation)
-                    return status == StepStatus.Completed ? "Ранее: " + entry.Message : entry.Message;
+                    return status == StepStatus.Completed ? "Ранее: " + entry.Message
+                        : status == StepStatus.Active ? "Последнее нарушение: " + entry.Message : entry.Message;
             }
             return null;
         }
@@ -265,6 +269,8 @@ namespace ScenarioBuilder.Runtime
             if (Runner.Session != null && !viewingImportedJournal)
                 foreach (var item in Runner.Session.Steps)
                     if (item.Spec.Id == view.Step.Id) { progress = item; break; }
+            if (view.Title != null)
+                view.Title.text = (progress?.Spec.Id ?? view.Step.Id) + " · " + (progress?.Spec.Title ?? view.Step.Title);
             var color = "#A6B2C5";
             var hint = viewingImportedJournal ? "Просмотр журнала · новый запуск: «Начать»"
                 : Runner.Session != null ? "Не участвует в этом прохождении"
@@ -381,6 +387,7 @@ namespace ScenarioBuilder.Runtime
     public sealed class DemoActionView
     {
         public StepDefinition Step;
+        public TMP_Text Title;
         public TMP_Text Hint;
         public UnityEngine.UI.Button[] Buttons;
     }

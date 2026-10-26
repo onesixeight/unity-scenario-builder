@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using ScenarioBuilder.Authoring;
+using ScenarioBuilder.Core;
 using UnityEngine;
 
 namespace ScenarioBuilder.Tests
@@ -33,6 +34,39 @@ namespace ScenarioBuilder.Tests
             Assert.That(plan.Groups[0].StepIds, Is.EqualTo(new[] { "first" }));
             Assert.That(plan.Groups[0].Batches.Count, Is.EqualTo(1));
             Assert.That(plan.Groups[0].Batches[0].StepIds, Is.EqualTo(new[] { "first" }));
+        }
+
+        [Test]
+        public void DisabledConfiguredStepIsExcludedFromJournalAndTrainingMaximum()
+        {
+            var first = CreateStep("first");
+            var disabled = CreateStep("disabled");
+            var last = CreateStep("last");
+            var mode = CreateMode(first, disabled, last);
+            disabled.Enabled = false;
+
+            var plan = mode.BuildPlan();
+            var logger = new MemoryJournalLogger();
+            var session = new ScenarioSession(plan, mode.ExecutionPolicy.CreatePolicy(), logger);
+            session.Start();
+            session.Handle(new ScenarioAction(first.Id, ((SignalConditionAsset)first.Condition).SuccessSignal));
+            session.Handle(new ScenarioAction(last.Id, ((SignalConditionAsset)last.Condition).SuccessSignal));
+            var result = new TrainingResultAnalyzer().Analyze(session.Journal);
+
+            Assert.That(mode.Scenario.Steps.Count, Is.EqualTo(3));
+            Assert.That(plan.Steps.ConvertAll(step => step.Id), Is.EqualTo(new[] { "first", "last" }));
+            Assert.That(session.Journal.Steps.ConvertAll(step => step.Id), Is.EqualTo(new[] { "first", "last" }));
+            Assert.That(session.IsFinished, Is.True);
+            Assert.That(result.IsValid, Is.True, string.Join("; ", result.Diagnostics));
+            Assert.That(result.Maximum, Is.EqualTo(20));
+            Assert.That(result.Score, Is.EqualTo(20));
+            Assert.That(result.Steps.Count, Is.EqualTo(2));
+            foreach (var step in result.Steps)
+            {
+                Assert.That(step.Status, Is.EqualTo("Completed"));
+                Assert.That(step.Attempts, Is.EqualTo(1));
+                Assert.That(step.Score, Is.EqualTo(10));
+            }
         }
 
         [Test]

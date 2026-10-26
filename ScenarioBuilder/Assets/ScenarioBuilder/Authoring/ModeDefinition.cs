@@ -46,7 +46,7 @@ namespace ScenarioBuilder.Authoring
         [InspectorName("Анализатор по умолчанию"), Tooltip("Удобный начальный выбор для интерфейса. После прохождения можно выбрать любой другой совместимый анализатор.")]
         public ResultAnalyzerAsset SuggestedAnalyzer;
 
-        [InspectorName("Действия до активации"), Tooltip("Violation — регистрировать нарушение. Ignore — полностью игнорировать события до очереди шага.")]
+        [InspectorName("Действия до активации"), Tooltip("Violation — неудачная попытка; в экзамене шаг сразу Failed без повтора. Ignore — полностью игнорировать события до очереди шага.")]
         public OutOfOrderPolicy OutOfOrderPolicy = OutOfOrderPolicy.Violation;
 
         [InspectorName("Группы"), Tooltip("В тренировке одна общая группа. В экзамене группы идут последовательно; пакеты внутри каждой группы настраиваются отдельно.")]

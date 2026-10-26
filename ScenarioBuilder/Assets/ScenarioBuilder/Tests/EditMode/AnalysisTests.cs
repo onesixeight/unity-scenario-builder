@@ -175,6 +175,175 @@ namespace ScenarioBuilder.Tests
         }
 
         [Test]
+        public void DifferentViolationIdsCannotCloseTheSamePositiveAttemptTwice()
+        {
+            var journal = CompleteJournal("Completed");
+            Terminal(journal, "1").Attempt = 2;
+            journal.Entries.Insert(1, new JournalEntry
+            {
+                Type = JournalEvents.Violation, StepId = "1", Result = "Active", Attempt = 1
+            });
+            journal.Entries.Insert(2, new JournalEntry
+            {
+                Type = JournalEvents.Violation, StepId = "1", Result = "Active", Attempt = 1
+            });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.Diagnostics, Has.Some.Contains("закрытой попытки 1"));
+            Assert.That(new ExamResultAnalyzer().Analyze(journal).IsValid, Is.False);
+        }
+
+        [Test]
+        public void RepeatedLegacyPendingViolationsWithoutAnAttemptRemainCompatible()
+        {
+            var journal = CompleteJournal("Completed");
+            for (var index = 0; index < 2; index++)
+                journal.Entries.Insert(1, new JournalEntry
+                {
+                    Type = JournalEvents.Violation, StepId = "1", Result = "Pending", Attempt = 0
+                });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(10));
+            Assert.That(result.Steps[0].Violations, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void DuplicateViolationEntryIdDoesNotCloseTheAttemptTwice()
+        {
+            var journal = CompleteJournal("Completed");
+            Terminal(journal, "1").Attempt = 2;
+            var violation = new JournalEntry
+            {
+                Type = JournalEvents.Violation, StepId = "1", Result = "Active", Attempt = 1
+            };
+            journal.Entries.Insert(1, violation);
+            journal.Entries.Insert(2, violation);
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(5));
+            Assert.That(result.Steps[0].Violations, Is.EqualTo(1));
+        }
+
+        [TestCase(JournalEvents.AttemptStarted)]
+        [TestCase(JournalEvents.ConditionProgress)]
+        public void ClosedAttemptCannotBeStartedAgainOrReceiveProgress(string eventType)
+        {
+            var journal = CompleteJournal("Completed");
+            Terminal(journal, "1").Attempt = 2;
+            journal.Entries.Insert(1, new JournalEntry
+            {
+                Type = JournalEvents.Violation, StepId = "1", Result = "Active", Attempt = 1
+            });
+            journal.Entries.Insert(2, new JournalEntry
+            {
+                Type = eventType, StepId = "1", Result = "Active", Attempt = 1
+            });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.Diagnostics, Is.Not.Empty);
+        }
+
+        [TestCase(JournalEvents.StepActivated)]
+        [TestCase(JournalEvents.AttemptStarted)]
+        [TestCase(JournalEvents.ConditionProgress)]
+        [TestCase(JournalEvents.Violation)]
+        public void KnownStepEventsAfterTerminalStatusAreContradictory(string eventType)
+        {
+            var journal = CompleteJournal("Completed");
+            journal.Entries.Insert(2, new JournalEntry
+            {
+                Type = eventType, StepId = "1", Result = "Active", Attempt = 1
+            });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.False);
+            Assert.That(result.Diagnostics, Has.Some.Contains("после его итогового статуса"));
+        }
+
+        [Test]
+        public void IgnoredActionsAndUnknownEventsRemainAllowedAfterTerminalStatus()
+        {
+            var journal = CompleteJournal("Completed");
+            journal.Entries.Insert(2, new JournalEntry
+            {
+                Type = JournalEvents.ActionIgnored, StepId = "1", Result = "Completed", Attempt = 1
+            });
+            journal.Entries.Insert(3, new JournalEntry { Type = "extension.operator-note", StepId = "1" });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(10));
+        }
+
+        [Test]
+        public void MultipleProgressEventsInTheSameOpenAttemptDoNotRequireAnAttemptStartedRecord()
+        {
+            var journal = CompleteJournal("Completed");
+            for (var index = 0; index < 2; index++)
+                journal.Entries.Insert(1, new JournalEntry
+                {
+                    Type = JournalEvents.ConditionProgress, StepId = "1", Result = "Active", Attempt = 1
+                });
+
+            var result = new TrainingResultAnalyzer().Analyze(journal);
+            Assert.That(result.IsValid, Is.True, string.Join("\n", result.Diagnostics));
+            Assert.That(result.Score, Is.EqualTo(10));
+        }
+
+        [Test]
+        public void DistinctAttemptStartedRecordsCannotStartTheSameAttemptTwice()
+        {
+            var journal = CompleteJournal("Completed");
+            for (var index = 0; index < 2; index++)
+                journal.Entries.Insert(1, new JournalEntry
+                {
+                    Type = JournalEvents.AttemptStarted, StepId = "1", Result = "Active", Attempt = 1
+                });
+
+            Assert.That(new TrainingResultAnalyzer().Analyze(journal).IsValid, Is.False);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PendingViolationCanConsumeAnAttemptWithoutDependingOnTheExecutionMode(bool terminalFailed)
+        {
+            var journal = CompleteJournal(terminalFailed ? "Failed" : "Completed");
+            journal.Mode = "custom.executor";
+            journal.Entries.Insert(1, new JournalEntry
+            {
+                Type = JournalEvents.AttemptStarted, StepId = "1", Result = "Pending", Attempt = 1
+            });
+            journal.Entries.Insert(2, new JournalEntry
+            {
+                Type = JournalEvents.Violation, StepId = "1", Result = "Pending", Attempt = 1, Violations = 1
+            });
+            if (!terminalFailed)
+            {
+                Terminal(journal, "1").Attempt = 2;
+                journal.Entries.Insert(3, new JournalEntry
+                {
+                    Type = JournalEvents.StepActivated, StepId = "1", Result = "Active", Attempt = 1
+                });
+                journal.Entries.Insert(4, new JournalEntry
+                {
+                    Type = JournalEvents.AttemptStarted, StepId = "1", Result = "Active", Attempt = 2
+                });
+            }
+
+            var training = new TrainingResultAnalyzer().Analyze(journal);
+            var exam = new ExamResultAnalyzer().Analyze(journal);
+            Assert.That(training.IsValid, Is.True, string.Join("\n", training.Diagnostics));
+            Assert.That(exam.IsValid, Is.True, string.Join("\n", exam.Diagnostics));
+            Assert.That(training.Score, Is.EqualTo(terminalFailed ? 0 : 5));
+            Assert.That(exam.Score, Is.EqualTo(terminalFailed ? 90 : 100));
+        }
+
+        [Test]
         public void FailedTerminalCannotReportFewerAttemptsThanItsKnownViolation()
         {
             var journal = CompleteJournal("Failed");
