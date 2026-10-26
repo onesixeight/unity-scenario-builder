@@ -26,6 +26,9 @@ namespace ScenarioBuilder.Editor
         private const string ScenePath = RootPath + "/ScenarioDemo.unity";
         private const float ReferenceWidth = 1920f;
         private const float ReferenceHeight = 1080f;
+        private const float StandOrthographicSize = 3.4f;
+        private const float StationLabelHeight = 2f;
+        private const float StationLabelFontSize = 3f;
         private static readonly Color Background = Hex("101722");
         private static readonly Color PanelColor = Hex("1D2939");
         private static readonly Color CardColor = Hex("263548");
@@ -361,7 +364,7 @@ namespace ScenarioBuilder.Editor
             camera.transform.position = new Vector3(0f, 11f, -10f);
             camera.transform.LookAt(new Vector3(0f, 0f, -0.4f));
             camera.orthographic = true;
-            camera.orthographicSize = 4.2f;
+            camera.orthographicSize = StandOrthographicSize;
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Hex("182638");
             camera.rect = new Rect(518f / ReferenceWidth, 1f - 650f / ReferenceHeight,
@@ -421,7 +424,7 @@ namespace ScenarioBuilder.Editor
             var source = station.AddComponent<TriggerEventSource>();
             Configure(source, runner, step, signal);
             source.Actor = actor;
-            WorldLabel(name + "Label", label, new Vector3(x, 1.35f, 1f), parent, camera, font, 2.7f);
+            WorldLabel(name + "Label", label, new Vector3(x, StationLabelHeight, 1f), parent, camera, font, StationLabelFontSize);
             return station.transform;
         }
 
@@ -433,7 +436,7 @@ namespace ScenarioBuilder.Editor
             var source = station.AddComponent<CollisionEventSource>();
             Configure(source, runner, step, "confirm");
             source.Actor = actor;
-            WorldLabel(name + "Label", label, new Vector3(x, 1.45f, 1f), parent, camera, font, 2.7f);
+            WorldLabel(name + "Label", label, new Vector3(x, StationLabelHeight, 1f), parent, camera, font, StationLabelFontSize);
             return station.transform;
         }
 
@@ -550,6 +553,7 @@ namespace ScenarioBuilder.Editor
             var camera = hud.Runner.transform.parent.Find("PhysicalStand/StandCamera").GetComponent<Camera>();
             camera.rect = new Rect(518f / ReferenceWidth, 1f - 550f / ReferenceHeight,
                 860f / ReferenceWidth, 350f / ReferenceHeight);
+            ConfigureStandPresentation(camera);
             foreach (var toggle in new[] { hud.PowerToggle, hud.ShieldToggle })
             {
                 var hitArea = toggle.GetComponent<UnityEngine.UI.Image>();
@@ -623,6 +627,19 @@ namespace ScenarioBuilder.Editor
             hud.HelpPanel.SetActive(true);
             hud.Refresh();
             EditorUtility.SetDirty(hud);
+        }
+
+        private static void ConfigureStandPresentation(Camera camera)
+        {
+            camera.orthographicSize = StandOrthographicSize;
+            foreach (var name in new[] { "TriggerStartLabel", "CollisionStopLabel", "TriggerALabel", "TriggerBLabel", "CollisionDockLabel" })
+            {
+                var label = camera.transform.parent.Find(name)?.GetComponent<TextMeshPro>();
+                if (label == null) continue;
+                var position = label.rectTransform.anchoredPosition3D;
+                label.rectTransform.anchoredPosition3D = new Vector3(position.x, StationLabelHeight, position.z);
+                label.fontSize = StationLabelFontSize;
+            }
         }
 
         private static void ConfigureGroupSummary(DemoHud hud)
