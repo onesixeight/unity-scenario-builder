@@ -1,0 +1,6 @@
+{
+  "name": "ScenarioBuilder.Core",
+  "rootNamespace": "ScenarioBuilder.Core",
+  "references": [],
+  "noEngineReferences": true
+}
