@@ -15,6 +15,12 @@ namespace ScenarioBuilder.Editor
                 "Состав группы и пакеты активации настраиваются отдельно. " +
                 "Один шаг в пакете — последовательность; несколько — одновременная активация. " +
                 "Порядок меняется перетаскиванием элементов списков.", HelpBoxMessageType.Info));
+            root.Add(new HelpBox(
+                "Старт группы: AfterPreviousGroup — после предыдущей (первая сразу); " +
+                "AtStart — сразу; AfterStep — после результата выбранного шага, включая ошибку или пропуск. " +
+                "AfterStep позволяет открыть следующую группу, пока предыдущая ещё выполняется. " +
+                "Шаг запуска должен быть включён и относиться к другой группе; циклы не допускаются.",
+                HelpBoxMessageType.Info));
 
             InspectorElement.FillDefaultInspector(root, serializedObject, this);
             var result = new HelpBox("", HelpBoxMessageType.Info);

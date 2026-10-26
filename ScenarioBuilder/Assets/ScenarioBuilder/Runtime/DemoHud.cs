@@ -19,6 +19,7 @@ namespace ScenarioBuilder.Runtime
         public TMP_Text JournalPageText;
         public TMP_Text ResultText;
         public TMP_Text StatusText;
+        public TMP_Text GroupsText;
         public UnityEngine.UI.Toggle PowerToggle;
         public UnityEngine.UI.Toggle ShieldToggle;
         public ContextState Power;
@@ -26,6 +27,7 @@ namespace ScenarioBuilder.Runtime
         public DemoActionView[] Actions;
         public GameObject HelpPanel;
         public UnityEngine.UI.ScrollRect JournalScroll;
+        public UnityEngine.UI.ScrollRect TasksScroll;
         public UnityEngine.UI.Button PreviousJournalButton;
         public UnityEngine.UI.Button NextJournalButton;
         private int knownEntryCount;
@@ -120,6 +122,11 @@ namespace ScenarioBuilder.Runtime
         {
             knownEntryCount = 0;
             knownJournal = null;
+            if (TasksScroll != null)
+            {
+                TasksScroll.StopMovement();
+                TasksScroll.verticalNormalizedPosition = 1f;
+            }
             if (PowerToggle != null && Power != null) PowerToggle.SetIsOnWithoutNotify(Power.Value);
             if (ShieldToggle != null && Shield != null) ShieldToggle.SetIsOnWithoutNotify(Shield.Value);
         }
@@ -135,7 +142,8 @@ namespace ScenarioBuilder.Runtime
                 StatusText.text = viewingImportedJournal ? "Просмотр загруженного журнала · можно сменить анализатор"
                     : session == null ? "Готов к запуску"
                     : session.IsFinished ? "Прохождение завершено · можно сменить анализатор"
-                    : $"Группа: {session.CurrentGroupId}   ·   Нарушений в группе: {session.CurrentGroupViolations}";
+                    : ActiveGroupsSummary(session);
+            RefreshGroups(session, viewingImportedJournal);
 
             if (TasksText != null)
             {
@@ -145,7 +153,10 @@ namespace ScenarioBuilder.Runtime
                 else foreach (var step in session.Steps)
                 {
                     text.Append("<color=").Append(StatusColor(step.Status)).Append("><b>")
-                        .Append(step.Spec.Id).Append(" · ").Append(StatusLabel(step.Status)).Append("</b></color>\n")
+                        .Append(step.Spec.Id).Append(" · ").Append(StatusLabel(step.Status));
+                    var owner = StepGroupId(step.Spec.Id);
+                    if (!string.IsNullOrEmpty(owner)) text.Append(" · ").Append(owner);
+                    text.Append("</b></color>\n")
                         .Append(step.Spec.Title).Append("\n<color=#A6B2C5>Попытки: ")
                         .Append(step.Attempts).Append(" · нарушения: ").Append(step.Violations).Append("</color>\n");
                     var reason = LastStepReason(step.Spec.Id, step.Status);
@@ -177,8 +188,9 @@ namespace ScenarioBuilder.Runtime
                     var entry = journal.Entries[i];
                     if (entry == null) continue;
                     var time = DateTime.TryParse(entry.TimestampUtc, out var parsed) ? parsed.ToLocalTime().ToString("HH:mm:ss") : "—";
-                    text.Append("<color=#A6B2C5>").Append(time).Append(" · ").Append(entry.StepId ?? "Сессия")
-                        .Append("</color>\n").Append(EventLabel(entry.Type)).Append(" · ").Append(StatusLabel(entry.Result));
+                    text.Append("<color=#A6B2C5>").Append(time).Append(" · ").Append(entry.StepId ?? "Сессия");
+                    if (!string.IsNullOrEmpty(entry.GroupId)) text.Append(" · ").Append(entry.GroupId);
+                    text.Append("</color>\n").Append(EventLabel(entry.Type)).Append(" · ").Append(StatusLabel(entry.Result));
                     if (entry.Attempt > 0) text.Append("  <size=14>попытка ").Append(entry.Attempt).Append("</size>");
                     text.Append('\n');
                     if (!string.IsNullOrEmpty(entry.Message)) text.Append("<size=15>").Append(entry.Message).Append("</size>\n");
@@ -219,6 +231,66 @@ namespace ScenarioBuilder.Runtime
                     ResultText.text = text.ToString();
                 }
             }
+        }
+
+        private static string ActiveGroupsSummary(IScenarioExecutor session)
+        {
+            if (!(session is IGroupProgressProvider provider))
+                return $"Группа: {session.CurrentGroupId}   ·   Нарушений в группе: {session.CurrentGroupViolations}";
+            var text = new StringBuilder("Активны группы: ");
+            var active = 0;
+            foreach (var group in provider.Groups)
+            {
+                if (group.Status != GroupStatus.Active) continue;
+                if (active++ > 0) text.Append("   ·   ");
+                text.Append(group.Id).Append(" (").Append(group.Violations);
+                if (group.StopsAtThreshold) text.Append('/').Append(group.ViolationThreshold);
+                text.Append(')');
+            }
+            return active > 0 ? text.ToString() : "Ожидается открытие группы";
+        }
+
+        private void RefreshGroups(IScenarioExecutor session, bool viewingImportedJournal)
+        {
+            if (GroupsText == null) return;
+            var text = new StringBuilder();
+            if (!viewingImportedJournal && session is IGroupProgressProvider provider)
+                foreach (var group in provider.Groups)
+                {
+                    var status = group.Status == GroupStatus.Active ? "Активна"
+                        : group.Status == GroupStatus.Completed ? "Завершена"
+                        : group.Status == GroupStatus.Skipped ? "Порог достигнут" : "Ожидает";
+                    var color = group.Status == GroupStatus.Active ? "#6EE7B7"
+                        : group.Status == GroupStatus.Completed ? "#93C5FD"
+                        : group.Status == GroupStatus.Skipped ? "#FCD34D" : "#A6B2C5";
+                    text.Append("<color=").Append(color).Append("><b>").Append(group.Id).Append(" · ")
+                        .Append(status).Append("</b> · нарушений: ").Append(group.Violations);
+                    if (group.StopsAtThreshold) text.Append('/').Append(group.ViolationThreshold);
+                    text.Append("</color>\n<size=14>").Append(group.Title).Append(": ")
+                        .Append(string.Join(", ", group.StepIds));
+                    if (group.Status == GroupStatus.Pending)
+                        text.Append(" · ").Append(group.StartRule == GroupStartRule.AfterStep
+                            ? "после " + group.StartAfterStepId
+                            : group.StartRule == GroupStartRule.AtStart ? "при старте" : "после предыдущей группы");
+                    text.Append("</size>\n<size=6> </size>\n");
+                }
+            GroupsText.text = text.ToString();
+            var height = text.Length > 0 ? GroupsText.preferredHeight + 6f : 0f;
+            var groupRect = GroupsText.rectTransform;
+            groupRect.sizeDelta = new Vector2(groupRect.sizeDelta.x, height);
+            if (TasksScroll == null) return;
+            var top = height > 0 ? 102f + height + 8f : 102f;
+            var scrollRect = TasksScroll.GetComponent<RectTransform>();
+            scrollRect.anchoredPosition = new Vector2(scrollRect.anchoredPosition.x, -top);
+            scrollRect.sizeDelta = new Vector2(scrollRect.sizeDelta.x, Mathf.Max(180f, 882f - top));
+        }
+
+        private string StepGroupId(string stepId)
+        {
+            if (Runner.LastJournal?.Steps != null)
+                foreach (var step in Runner.LastJournal.Steps)
+                    if (step != null && step.Id == stepId) return step.GroupId;
+            return null;
         }
 
         private string LastStepReason(string id, StepStatus status)

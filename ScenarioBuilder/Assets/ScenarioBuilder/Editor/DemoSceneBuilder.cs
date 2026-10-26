@@ -54,7 +54,8 @@ namespace ScenarioBuilder.Editor
             "3. На S06 войдите в A, дождитесь входа, затем идите в B. Перед S07 включите питание, перед S10 — защиту над стендом.\n\n" +
             "4. Дождитесь движения участника и физического контакта. Чтобы войти повторно, сначала вернитесь «Домой».\n\n" +
             "5. Красная «Ошибка» специально имитирует нарушение. В тренировке можно повторить шаг, в экзамене ошибка окончательна.\n\n" +
-            "Журнал справа прокручивается колёсиком или ползунком. Причины ошибок и пропусков остаются возле заданий слева.";
+            "Журнал справа прокручивается колёсиком или ползунком. Причины ошибок и пропусков остаются возле заданий слева.\n\n" +
+            "Дополнительно: в режиме «Экзамен · перекрытие» результат S02 открывает группу 2, а S06 — группу 3. Несколько групп могут работать одновременно.";
         private static bool tmpImportPending;
 
         [MenuItem("Tools/Учебные сценарии/Открыть или создать демо")]
@@ -92,6 +93,7 @@ namespace ScenarioBuilder.Editor
             var runnerObject = Child("ScenarioRunner", root.transform);
             var runner = runnerObject.AddComponent<ScenarioRunner>();
             runner.Modes = new[] { training, exam };
+            EnsureOverlapMode(runner);
             runner.Executor = Asset<DefaultExecutorAsset>("Config/DefaultExecutor.asset", "Стандартный исполнитель");
             runner.Logger = memoryLogger;
             runner.Analyzer = trainingAnalyzer;
@@ -145,6 +147,98 @@ namespace ScenarioBuilder.Editor
             EditorSceneManager.MarkSceneDirty(scene);
             if (!EditorSceneManager.SaveScene(scene)) throw new IOException("Не удалось сохранить демо.");
             AssetDatabase.SaveAssets();
+        }
+
+        [MenuItem("Tools/Учебные сценарии/Добавить режим с перекрытием групп")]
+        public static void UpgradeDemoOverlapGroups()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                throw new InvalidOperationException("Добавьте режим с перекрытием вне Play Mode.");
+            RequireSavedScenes();
+            var scene = SceneManager.GetActiveScene();
+            if (scene.path != ScenePath)
+                throw new InvalidOperationException("Сначала откройте демонстрационную сцену.");
+            var hud = scene.GetRootGameObjects().SelectMany(root => root.GetComponentsInChildren<DemoHud>(true)).Single();
+            EnsureOverlapMode(hud.Runner);
+            ConfigureGroupSummary(hud);
+            ConfigureModeCaption(hud.ModePicker);
+            UpdateOverlapHelp(hud);
+            EditorUtility.SetDirty(hud);
+            EditorSceneManager.MarkSceneDirty(scene);
+            if (!EditorSceneManager.SaveScene(scene)) throw new IOException("Не удалось сохранить демо.");
+            AssetDatabase.SaveAssets();
+        }
+
+        private static ModeDefinition EnsureOverlapMode(ScenarioRunner runner)
+        {
+            if (runner == null)
+                throw new InvalidOperationException("В демо не назначен исполнитель сценария.");
+            const string path = RootPath + "/Config/ExamOverlap.asset";
+            var overlap = AssetDatabase.LoadAssetAtPath<ModeDefinition>(path);
+            if (overlap == null)
+            {
+                var exam = AssetDatabase.LoadAssetAtPath<ModeDefinition>(RootPath + "/Config/Exam.asset");
+                if (exam == null || exam.Scenario == null || exam.Groups == null || exam.Groups.Count != 3)
+                    throw new InvalidOperationException("Для бонусного режима нужен настроенный Exam.asset с тремя группами.");
+                var examErrors = exam.ValidateConfiguration();
+                if (examErrors.Count > 0)
+                    throw new InvalidOperationException("Сначала исправьте настройки Exam.asset:\n" + string.Join("\n", examErrors));
+
+                var secondGroupTrigger = exam.Scenario.Steps.FirstOrDefault(step => step != null && step.Id == "S02");
+                var thirdGroupTrigger = exam.Scenario.Steps.FirstOrDefault(step => step != null && step.Id == "S06");
+                if (secondGroupTrigger == null || thirdGroupTrigger == null || !secondGroupTrigger.Enabled || !thirdGroupTrigger.Enabled)
+                    throw new InvalidOperationException("Для бонусного демо нужны включённые шаги S02 и S06 в общем сценарии.");
+
+                overlap = ScriptableObject.CreateInstance<ModeDefinition>();
+                overlap.name = "Экзамен · перекрытие";
+                overlap.DisplayName = "Экзамен · перекрытие";
+                overlap.Scenario = exam.Scenario;
+                overlap.ExecutionPolicy = exam.ExecutionPolicy;
+                overlap.SuggestedAnalyzer = exam.SuggestedAnalyzer;
+                overlap.OutOfOrderPolicy = exam.OutOfOrderPolicy;
+                overlap.Groups = exam.Groups.Select(CopyGroup).ToList();
+                overlap.Groups[0].StartRule = GroupStartRule.AfterPreviousGroup;
+                overlap.Groups[0].StartAfterStep = null;
+                overlap.Groups[1].StartRule = GroupStartRule.AfterStep;
+                overlap.Groups[1].StartAfterStep = secondGroupTrigger;
+                overlap.Groups[2].StartRule = GroupStartRule.AfterStep;
+                overlap.Groups[2].StartAfterStep = thirdGroupTrigger;
+                var errors = overlap.ValidateConfiguration();
+                if (errors.Count > 0)
+                {
+                    UnityEngine.Object.DestroyImmediate(overlap);
+                    throw new InvalidOperationException("Ошибка бонусного режима:\n" + string.Join("\n", errors));
+                }
+                EnsureFolder(RootPath + "/Config");
+                AssetDatabase.CreateAsset(overlap, path);
+                EditorUtility.SetDirty(overlap);
+            }
+
+            var modes = new List<ModeDefinition>(runner.Modes ?? Array.Empty<ModeDefinition>());
+            if (!modes.Contains(overlap))
+            {
+                modes.Add(overlap);
+                runner.Modes = modes.ToArray();
+                EditorUtility.SetDirty(runner);
+            }
+            return overlap;
+        }
+
+        private static StepGroup CopyGroup(StepGroup source)
+        {
+            return new StepGroup
+            {
+                Id = source.Id,
+                Title = source.Title,
+                ViolationThreshold = source.ViolationThreshold,
+                StartRule = source.StartRule,
+                StartAfterStep = source.StartAfterStep,
+                Steps = new List<StepDefinition>(source.Steps),
+                Batches = source.Batches.Select(batch => new StepBatch
+                {
+                    Steps = new List<StepDefinition>(batch.Steps)
+                }).ToList()
+            };
         }
 
         private static void RequireSavedScenes()
@@ -426,6 +520,7 @@ namespace ScenarioBuilder.Editor
 
         private static void ApplyUsability(DemoHud hud)
         {
+            EnsureOverlapMode(hud.Runner);
             var canvas = hud.transform;
             var font = hud.TasksText.font;
             hud.MessageText.overflowMode = TextOverflowModes.Ellipsis;
@@ -502,6 +597,8 @@ namespace ScenarioBuilder.Editor
                 if (scroll.content != null && scroll.transform.name.EndsWith("Scroll", StringComparison.Ordinal))
                     ConfigureScrolling(scroll);
             hud.JournalScroll = hud.JournalText.GetComponentInParent<UnityEngine.UI.ScrollRect>();
+            ConfigureGroupSummary(hud);
+            ConfigureModeCaption(hud.ModePicker);
             var right = canvas.Find("ResultsAndJournalPanel");
             hud.PreviousJournalButton = right.Find("PreviousJournalPage").GetComponent<UnityEngine.UI.Button>();
             hud.NextJournalButton = right.Find("NextJournalPage").GetComponent<UnityEngine.UI.Button>();
@@ -521,11 +618,50 @@ namespace ScenarioBuilder.Editor
                 var close = Button("CloseHelp", box, "Понятно, к тренажёру", 30, 615, 900, 52, Green, font, 21);
                 UnityEventTools.AddPersistentListener(close.onClick, hud.CloseHelp);
             }
-            hud.HelpPanel.transform.Find("HelpCard/Instructions").GetComponent<TMP_Text>().text = HelpInstructions;
+            UpdateOverlapHelp(hud);
             hud.HelpPanel.transform.SetAsLastSibling();
             hud.HelpPanel.SetActive(true);
             hud.Refresh();
             EditorUtility.SetDirty(hud);
+        }
+
+        private static void ConfigureGroupSummary(DemoHud hud)
+        {
+            var panel = hud.transform.Find("TasksPanel");
+            var summary = panel.Find("GroupsText")?.GetComponent<TMP_Text>();
+            if (summary == null)
+                summary = Text("GroupsText", panel, "Группы появятся после запуска.",
+                    14, 98, 442, 120, 16, hud.TasksText.font);
+            summary.fontSize = 16;
+            hud.GroupsText = summary;
+            hud.TasksScroll = hud.TasksText.GetComponentInParent<UnityEngine.UI.ScrollRect>();
+            if (hud.TasksScroll != null)
+                SetRect(hud.TasksScroll.GetComponent<RectTransform>(), 14, 246, 442, 636);
+        }
+
+        private static void ConfigureModeCaption(TMP_Dropdown dropdown)
+        {
+            if (dropdown == null) return;
+            foreach (var text in new[] { dropdown.captionText, dropdown.itemText })
+            {
+                if (text == null) continue;
+                text.enableAutoSizing = true;
+                text.fontSizeMin = 12;
+                text.fontSizeMax = 16;
+                text.textWrappingMode = TextWrappingModes.NoWrap;
+                text.overflowMode = TextOverflowModes.Ellipsis;
+            }
+        }
+
+        private static void UpdateOverlapHelp(DemoHud hud)
+        {
+            if (hud.HelpPanel == null) return;
+            var instructions = hud.HelpPanel.transform.Find("HelpCard/Instructions")?.GetComponent<TMP_Text>();
+            if (instructions == null) return;
+            instructions.text = HelpInstructions;
+            instructions.enableAutoSizing = true;
+            instructions.fontSizeMin = 17;
+            instructions.fontSizeMax = 21;
         }
 
         private static void ConfigureStateHint(string name, string message)

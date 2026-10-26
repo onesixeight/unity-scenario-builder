@@ -165,7 +165,44 @@ namespace ScenarioBuilder.Tests
             }
         }
 
-        private Fixture CreateFixture(bool context = false, bool exam = false)
+        [UnityTest]
+        public IEnumerator GroupOverviewKeepsIndependentCountersAndResetsOnRestart()
+        {
+            var fixture = CreateFixture(exam: true, overlap: true);
+            yield return SettleLayout(fixture);
+            Assert.That(fixture.Hud.GroupsText.GetParsedText(), Does.Contain("first · Активна"));
+            Assert.That(fixture.Hud.GroupsText.GetParsedText(), Does.Contain("second · Активна"));
+
+            fixture.Runner.Submit(fixture.Step, Marker(0));
+            yield return SettleLayout(fixture);
+            var overview = fixture.Hud.GroupsText.GetParsedText();
+            Assert.That(overview, Does.Contain("first · Порог достигнут"));
+            Assert.That(overview, Does.Contain("second · Активна"));
+            Assert.That(overview, Does.Contain("нарушений: 1/1"));
+            Assert.That(overview, Does.Contain("нарушений: 0/2"));
+            Assert.That(fixture.Runner.IsRunning, Is.True);
+            Assert.That(fixture.Hud.TasksText.GetParsedText(), Does.Contain("hud-step · Ошибка · first"));
+
+            fixture.Runner.SubmitById("independent-a", "ok");
+            fixture.Runner.SubmitById("independent-b", "ok");
+            yield return SettleLayout(fixture);
+            Assert.That(fixture.Runner.Session.IsFinished, Is.True);
+            Assert.That(fixture.Runner.LastAnalysis.IsValid, Is.True);
+            Assert.That(fixture.Runner.LastAnalysis.Score, Is.EqualTo(85));
+
+            fixture.Runner.Restart();
+            yield return SettleLayout(fixture);
+            Assert.That(fixture.Hud.GroupsText.GetParsedText(), Does.Not.Contain("Порог достигнут"));
+            Assert.That(fixture.Hud.GroupsText.GetParsedText(), Does.Contain("first · Активна"));
+            Assert.That(fixture.Hud.GroupsText.GetParsedText(), Does.Contain("second · Активна"));
+            foreach (var step in fixture.Runner.Session.Steps)
+            {
+                Assert.That(step.Attempts, Is.Zero);
+                Assert.That(step.Violations, Is.Zero);
+            }
+        }
+
+        private Fixture CreateFixture(bool context = false, bool exam = false, bool overlap = false)
         {
             // Use the configured standard font; shared TMP resources belong to the project.
             var font = TMP_Settings.defaultFontAsset;
@@ -204,6 +241,15 @@ namespace ScenarioBuilder.Tests
                 peer.Condition = step.Condition;
                 scenario.Steps.Add(peer);
             }
+            if (overlap)
+                foreach (var id in new[] { "independent-a", "independent-b" })
+                {
+                    var peer = Asset<StepDefinition>();
+                    peer.Id = id;
+                    peer.Title = id;
+                    peer.Condition = step.Condition;
+                    scenario.Steps.Add(peer);
+                }
             var mode = Asset<ModeDefinition>();
             mode.DisplayName = "HUD training";
             mode.Scenario = scenario;
@@ -215,6 +261,23 @@ namespace ScenarioBuilder.Tests
                 Steps = new List<StepDefinition>(scenario.Steps),
                 Batches = new List<StepBatch> { new StepBatch { Steps = new List<StepDefinition>(scenario.Steps) } }
             });
+            if (overlap)
+            {
+                mode.Groups.Clear();
+                for (var index = 0; index < 2; index++)
+                {
+                    var members = scenario.Steps.GetRange(index * 2, 2);
+                    mode.Groups.Add(new StepGroup
+                    {
+                        Id = index == 0 ? "first" : "second",
+                        Title = index == 0 ? "First group" : "Second group",
+                        StartRule = GroupStartRule.AtStart,
+                        ViolationThreshold = index == 0 ? 1 : 2,
+                        Steps = members,
+                        Batches = new List<StepBatch> { new StepBatch { Steps = new List<StepDefinition>(members) } }
+                    });
+                }
+            }
             var runner = Object("HUD runner").AddComponent<ScenarioRunner>();
             runner.Modes = new[] { mode };
             runner.Logger = Asset<MemoryLoggerAsset>();
@@ -277,6 +340,7 @@ namespace ScenarioBuilder.Tests
             hud.Analyzers = new[] { runner.Analyzer };
             hud.JournalText = journalText;
             hud.TasksText = Text("Tasks text", canvasObject.transform, font);
+            hud.GroupsText = Text("Groups text", canvasObject.transform, font);
             hud.ResultText = Text("Result text", canvasObject.transform, font);
             hud.JournalScroll = scroll;
             hud.Power = power;

@@ -24,6 +24,12 @@ namespace ScenarioBuilder.Authoring
         [InspectorName("Порог нарушений"), Min(1), Tooltip("Для экзамена: при достижении порога незавершённые шаги группы пропускаются. В тренировке не применяется.")]
         public int ViolationThreshold = 2;
 
+        [InspectorName("Правило старта группы"), Tooltip("AfterPreviousGroup — первая группа стартует сразу, остальные после закрытия предыдущей. AtStart — старт сразу вместе с другими такими группами. AfterStep — после завершения выбранного шага, включая ошибку или пропуск.")]
+        public GroupStartRule StartRule = GroupStartRule.AfterPreviousGroup;
+
+        [InspectorName("Шаг запуска"), Tooltip("Используется только при AfterStep. Выберите включённый шаг общего сценария из другой группы. Запуск разрешается после старта группы этого шага и его завершения с любым итогом.")]
+        public StepDefinition StartAfterStep;
+
         [InspectorName("Состав группы"), Tooltip("Шаги, относящиеся к этой группе. Каждый включённый шаг сценария должен быть ровно в одной группе.")]
         public List<StepDefinition> Steps = new List<StepDefinition>();
 
@@ -49,7 +55,7 @@ namespace ScenarioBuilder.Authoring
         [InspectorName("Действия до активации"), Tooltip("Violation — неудачная попытка; в экзамене шаг сразу Failed без повтора. Ignore — полностью игнорировать события до очереди шага.")]
         public OutOfOrderPolicy OutOfOrderPolicy = OutOfOrderPolicy.Violation;
 
-        [InspectorName("Группы"), Tooltip("В тренировке одна общая группа. В экзамене группы идут последовательно; пакеты внутри каждой группы настраиваются отдельно.")]
+        [InspectorName("Группы"), Tooltip("В тренировке одна общая группа. Для каждой экзаменационной группы выберите правило старта: после предыдущей, сразу или после шага. Пакеты активации внутри групп настраиваются отдельно.")]
         public List<StepGroup> Groups = new List<StepGroup>();
 
         public ScenarioPlan BuildPlan()
@@ -134,8 +140,23 @@ namespace ScenarioBuilder.Authoring
                 {
                     Id = source.Id,
                     Title = source.Title,
-                    ViolationThreshold = source.ViolationThreshold
+                    ViolationThreshold = source.ViolationThreshold,
+                    StartRule = source.StartRule,
+                    StartAfterStepId = source.StartRule == GroupStartRule.AfterStep && source.StartAfterStep != null
+                        ? source.StartAfterStep.Id : null
                 };
+                if (source.StartRule == GroupStartRule.AfterStep)
+                {
+                    if (source.StartAfterStep == null)
+                        errors.Add($"Группа '{source.Id}': выберите шаг запуска для правила AfterStep.");
+                    else
+                    {
+                        if (!available.Contains(source.StartAfterStep))
+                            errors.Add($"Группа '{source.Id}': шаг запуска '{source.StartAfterStep.Id}' отсутствует в общем сценарии.");
+                        if (!source.StartAfterStep.Enabled)
+                            errors.Add($"Группа '{source.Id}': шаг запуска '{source.StartAfterStep.Id}' выключен.");
+                    }
+                }
                 AddStepIds(source.Steps, group.StepIds, available, errors, $"Группа '{source.Id}'");
 
                 if (source.Batches == null || source.Batches.Count == 0)
